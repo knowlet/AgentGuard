@@ -12,7 +12,8 @@ services:
       - diagnostic-evidence:/evidence
     read_only: true
     tmpfs:
-      - /tmp:rw,nosuid,nodev,size=128m,mode=1777
+      # Diagnostic-only: execute the exact checksum-verified Gateway copy.
+      - /tmp:rw,exec,nosuid,nodev,size=128m,mode=1777
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     pids_limit: 128
