@@ -10,14 +10,21 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Checkout exact event commit (no third-party action)
+      - name: Checkout exact event commit
         env:
           REPOSITORY: ${{ github.repository }}
           COMMIT: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           git init .
           git remote add origin "https://github.com/${REPOSITORY}.git"
-          git fetch --depth=1 origin "$COMMIT"
+          AUTH=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          echo "::add-mask::$AUTH"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $AUTH" \
+          GIT_TERMINAL_PROMPT=0 git fetch --depth=1 origin "$COMMIT"
+          unset AUTH GH_TOKEN
           git checkout --detach FETCH_HEAD
       - name: Python contract and review regressions
         run: python3 -m unittest discover -s tests -v

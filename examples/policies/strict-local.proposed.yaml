@@ -21,6 +21,7 @@ spec:
       requireTrustedProvenance: true
       rejectMissing: true
       rejectExpired: true
+      rejectFutureDated: true
       rejectDigestMismatch: true
     rejectUnknownFieldsBeforeNormalization: true
     onMissingEvidence: reject_activation

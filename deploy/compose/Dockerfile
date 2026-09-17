@@ -5,5 +5,6 @@ WORKDIR /app
 COPY tools/ tools/
 COPY tests/fixtures/ tests/fixtures/
 RUN python -m tools.fetch_gateway --output /usr/local/bin/agentgateway
+RUN mkdir /evidence && chown 65532:65532 /evidence
 USER 65532:65532
-ENTRYPOINT ["python", "-m", "tools.gateway_probe", "--gateway-bin", "/usr/local/bin/agentgateway", "--report", "/tmp/gateway-stock.json"]
+ENTRYPOINT ["python", "-m", "tools.gateway_probe", "--gateway-bin", "/usr/local/bin/agentgateway", "--report", "/evidence/gateway-stock.json"]

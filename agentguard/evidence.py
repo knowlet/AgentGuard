@@ -55,7 +55,9 @@ def validate_evidence(raw: bytes, *, bindings: dict[str, str], trusted_artifact_
         raise EvidenceRejected('INVALID_EXPECTED_SCOPE')
     if not isinstance(required_fields, (set, frozenset)) or not required_fields:
         raise EvidenceRejected('EXPECTED_FIELDS_MISSING')
-    if not all(isinstance(p, str) and p.startswith('/') for p in required_fields):
+    # This field-level profile excludes the empty document-root pointer.
+    if not all(isinstance(p, str) and re.fullmatch(r'(?:/(?:[^~/]|~[01])*)+', p) is not None
+               for p in required_fields):
         raise EvidenceRejected('INVALID_EXPECTED_FIELDS')
     if type(now) is not int or now < 0 or type(max_age_seconds) is not int or max_age_seconds <= 0:
         raise EvidenceRejected('INVALID_CLOCK_OR_MAX_AGE')

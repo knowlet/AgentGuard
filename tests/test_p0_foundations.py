@@ -77,7 +77,10 @@ class EvidencePreflight(unittest.TestCase):
                 self.check(dict(self.doc, unknown_fields_rejected=value))
 
     def test_duplicate_json_keys(self):
-        raw = b'{"kind":"x","kind":"gateway-e2e-evidence/v1"}'
+        payload = json.dumps(self.doc, separators=(',', ':')).encode()
+        raw = payload.replace(b'"kind":"gateway-e2e-evidence/v1"',
+                              b'"kind":"x","kind":"gateway-e2e-evidence/v1"', 1)
+        self.assertEqual(json.loads(raw), self.doc)  # Ordinary last-key-wins parsing would accept it.
         with self.assertRaises(EvidenceRejected):
             validate_evidence(raw, bindings=self.bindings, scope=self.scope, required_fields={'/messages'},
                               now=150, trusted_artifact_sha256=hashlib.sha256(raw).hexdigest())

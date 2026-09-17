@@ -8,6 +8,8 @@ services:
       args:
         PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12-slim}
     network_mode: none
+    volumes:
+      - diagnostic-evidence:/evidence
     read_only: true
     tmpfs:
       - /tmp:rw,nosuid,nodev,size=128m,mode=1777
@@ -18,3 +20,6 @@ services:
     cpus: 2
     environment:
       PYTHONDONTWRITEBYTECODE: '1'
+
+volumes:
+  diagnostic-evidence: {}
