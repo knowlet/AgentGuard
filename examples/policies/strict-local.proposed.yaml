@@ -1,0 +1,39 @@
+# Proposed AgentGuard schema, NOT native AgentGateway configuration.
+# No compiler/runtime is supplied by this documentation change.
+apiVersion: agentguard.dev/v1alpha1
+kind: PolicyBundle
+metadata:
+  name: strict-local
+  revision: draft-1
+spec:
+  mode: enforce
+  identity:
+    requireVerifiedSubject: true
+    tenantSource: verified_claim
+  llm:
+    allowedEndpoints: [/v1/chat/completions]
+    allowedContentTypes: [application/json]
+    streaming: deny
+    incompleteCoverage: deny
+  mcp:
+    defaultAction: deny
+    authorizeEveryCall: true
+    requireBackendQualifiedTool: true
+    allowRequestIdentityMutation: false
+    errorResponseProtection: required
+  detectors:
+    - id: presidio-local
+      purpose: pii
+      required: true
+      action: mask
+    - id: deterministic-secrets
+      purpose: secrets
+      required: true
+      action: deny
+  failures:
+    requiredDetector: deny
+    invalidMutation: deny
+    unknownCapability: deny
+    auditAppend: deny
+  audit:
+    payloadMode: metadata_only
