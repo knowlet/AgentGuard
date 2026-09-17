@@ -21,11 +21,12 @@ def _integer(value: int, name: str, minimum: int = 0) -> None:
         raise ValueError(f"{name} must be an integer >= {minimum}")
 
 
-def _probability(value: float, name: str) -> None:
+def _probability(value: float, name: str, *, inclusive: bool = False) -> None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{name} must be a finite probability")
-    if not math.isfinite(value) or not 0 < value < 1:
-        raise ValueError(f"{name} must lie strictly between 0 and 1")
+    valid_range = 0 <= value <= 1 if inclusive else 0 < value < 1
+    if not math.isfinite(value) or not valid_range:
+        raise ValueError(f"{name} is outside its probability range")
 
 
 def binomial_cdf(k: int, n: int, p: float) -> float:
@@ -39,7 +40,7 @@ def binomial_cdf(k: int, n: int, p: float) -> float:
     if k == n:
         return 1.0
     # Sum the smaller number of terms; bound roundoff at the probability limits.
-    if k > n // 2:
+    if k > n // 2 and 0.0 < 1.0 - p < 1.0:
         return max(0.0, min(1.0, 1.0 - binomial_cdf(n - k - 1, n, 1.0 - p)))
     log_p, log_q = math.log(p), math.log1p(-p)
     log_factorial = math.lgamma(n + 1)
@@ -56,7 +57,7 @@ def acceptable_errors(n: int, *, metric: str, threshold: float,
     _integer(n, "n", 1)
     if metric not in {"fpr", "recall"}:
         raise ValueError("metric must be fpr or recall")
-    _probability(threshold, "threshold")
+    _probability(threshold, "threshold", inclusive=True)
     _probability(confidence, "confidence")
     # Acceptance is monotone in error count, not necessarily in n (discreteness).
     lo, hi = -1, n + 1
@@ -77,9 +78,16 @@ def fixed_n_power(n: int, *, metric: str, threshold: float, expected_rate: float
     _probability(expected_rate, "expected_rate")
     max_errors = acceptable_errors(n, metric=metric, threshold=threshold,
                                    confidence=confidence)
-    error_probability = expected_rate if metric == "fpr" else 1 - expected_rate
+    if metric == "fpr":
+        power = binomial_cdf(max_errors, n, expected_rate)
+    elif 1.0 - expected_rate < 1.0:
+        power = binomial_cdf(max_errors, n, 1.0 - expected_rate)
+    else:
+        # Avoid passing a rounded endpoint probability into binomial_cdf.
+        boundary = n - max_errors - 1
+        power = 1.0 - binomial_cdf(boundary, n, expected_rate) if boundary < n else 0.0
     return {"n": n, "max_acceptable_errors": max_errors,
-            "passing_probability": binomial_cdf(max_errors, n, error_probability)}
+            "passing_probability": power}
 
 
 def plan(*, metric: str, threshold: float, expected_rate: float, target_power: float,

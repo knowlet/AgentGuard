@@ -19,21 +19,29 @@ def wilson_interval(events: int, trials: int, confidence: float = 0.95) -> tuple
         raise ValueError("counts must be integers, not booleans")
     if trials <= 0 or not 0 <= events <= trials:
         raise ValueError("require 0 <= events <= trials and trials > 0")
-    if not math.isfinite(confidence) or not 0 < confidence < 1:
+    if type(confidence) not in (int, float) or not math.isfinite(confidence) or not 0 < confidence < 1:
         raise ValueError("confidence must be finite and between zero and one")
-    z = NormalDist().inv_cdf((1 + confidence) / 2)
+    # Lower-tail inversion avoids rounding (1 + confidence) / 2 to 1.
+    # Reject confidences whose lower tail itself cannot be represented.
+    tail = (1.0 - confidence) / 2.0
+    if not 0.0 < tail < 0.5:
+        raise ValueError("confidence is outside the representable quantile range")
+    z = -NormalDist().inv_cdf(tail)
     p = events / trials
     denominator = 1 + z * z / trials
     center = (p + z * z / (2 * trials)) / denominator
     radius = z * math.sqrt(p * (1 - p) / trials + z * z / (4 * trials * trials)) / denominator
-    return max(0.0, center - radius), min(1.0, center + radius)
+    # Exact endpoints prevent roundoff from making recall=1 pass at finite n.
+    lower = 0.0 if events == 0 else max(0.0, center - radius)
+    upper = 1.0 if events == trials else min(1.0, center + radius)
+    return lower, upper
 
 
 def rate_gate(events: int, trials: int, *, metric: str, threshold: float,
               confidence: float = 0.95) -> dict[str, Any]:
     if metric not in {"fpr", "recall"}:
         raise ValueError("metric must be fpr or recall")
-    if not math.isfinite(threshold) or not 0 <= threshold <= 1:
+    if type(threshold) not in (int, float) or not math.isfinite(threshold) or not 0 <= threshold <= 1:
         raise ValueError("threshold must be finite and between zero and one")
     lower, upper = wilson_interval(events, trials, confidence)
     passed = upper <= threshold if metric == "fpr" else lower >= threshold
@@ -95,20 +103,56 @@ def serialize_nonmask_decision(effect: str, reason: str, *, body: str = "Request
 
 
 def attack_accounting(*, successes: int, policy_blocks: int, normal_failures: int,
-                      availability_only: int, unknown: int) -> dict[str, Any]:
+                      availability_only: int, unknown: int,
+                      availability_faults: int | None = None) -> dict[str, Any]:
     counts = (successes, policy_blocks, normal_failures, availability_only, unknown)
     if any(type(c) is not int or c < 0 for c in counts):
         raise ValueError("counts must be nonnegative integers")
     valid = sum(counts)
+    if availability_faults is not None:
+        if type(availability_faults) is not int or not availability_only <= availability_faults <= valid:
+            raise ValueError("require availability_only <= availability_faults <= valid")
     resolved = successes + policy_blocks + normal_failures
     return {"valid": valid, "resolved": resolved,
             "observed_end_to_end_success": successes / valid if valid else None,
             "resolved_asr": successes / resolved if resolved else None,
             "availability_only_fraction": availability_only / valid if valid else None,
             "unknown_fraction": unknown / valid if valid else None,
+            "availability_faults": availability_faults,
+            "availability_fault_fraction": availability_faults / valid if availability_faults is not None and valid else None,
+            "availability_evidence": "COMPLETE" if availability_faults is not None else "MISSING",
             "unresolved_bounds": [successes / valid, (successes + availability_only + unknown) / valid] if valid else None,
             "status": "NOT_ESTIMABLE" if not resolved else "DESCRIPTIVE_ONLY"}
 
+
+
+def summarize_trials(trials: list[dict[str, Any]]) -> dict[str, Any]:
+    """Account pre-labelled outcomes; caller supplies the external success oracle.
+
+    The availability flag is mandatory even for S (successful attack) outcomes.
+    This helper does not infer policy efficacy from HTTP codes or timeouts.
+    """
+    counts = dict.fromkeys(("S", "B", "N", "I", "U"), 0)
+    faults = 0
+    seen: set[str] = set()
+    for trial in trials:
+        if not isinstance(trial, dict) or set(trial) != {"id", "outcome", "availability_fault"}:
+            raise ValueError("require id, outcome, availability_fault")
+        trial_id = trial["id"]
+        if not isinstance(trial_id, str) or not trial_id or trial_id in seen:
+            raise ValueError("trial IDs must be nonempty and unique")
+        seen.add(trial_id)
+        outcome = trial["outcome"]
+        if not isinstance(outcome, str) or outcome not in counts:
+            raise ValueError("invalid outcome")
+        fault = trial["availability_fault"]
+        if type(fault) is not bool or (outcome == "I" and not fault):
+            raise ValueError("require explicit fault boolean; I always has a fault")
+        counts[outcome] += 1
+        faults += int(fault)
+    return attack_accounting(successes=counts["S"], policy_blocks=counts["B"],
+                             normal_failures=counts["N"], availability_only=counts["I"],
+                             unknown=counts["U"], availability_faults=faults)
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
