@@ -45,8 +45,8 @@ Tenant/subject/scopes 來自驗證 JWT/mTLS；入口剝除偽造內部 header。
 | Presidio＋secret rules | PII 基線＋本地 recognizers；臺灣格式/校驗、姓名/地址正負例；entropy 只作輔助 [S5] | P1 |
 | pplx-pii | PII 替代/補充候選，token classification；長文切塊、offset、span parity，原版/打包授權分審 [S6–S7] | P3 |
 | SingGuard-NSFA | injection/agent-security 候選；分類 heads 與生成模式分測，不把作者 A100 數字當本機 SLO [S8] | P3 |
-| NeMo Guardrails | 選用對話/流程 adapter；不讓第二套 DSL 成為權限真相來源 [S9] | P3 後 |
-| Guardrails AI | 選用 validators；逐項查授權/網路行為，不依賴舊 hosted Hub 推論路徑 [S10] | P3 後 |
+| NeMo Guardrails | 選用對話/流程 adapter；不讓第二套 DSL 成為權限真相來源 [S9] | P3 實驗；驗收後才採用 |
+| Guardrails AI | 選用 validators；逐項查授權/網路行為，不依賴舊 hosted Hub 推論路徑 [S10] | P3 實驗；驗收後才採用 |
 | Assurance | Promptfoo 優先、PyRIT adaptive、DeepTeam 選用；獨立 images、共用 cases/results [S11–S13] | P0 起 |
 | Studio | FastAPI/Pydantic、PostgreSQL、SQLAlchemy/Alembic；React/TS/Vite、JSON Schema 表單/AJV | P4 |
 | Observability | Prometheus/Loki/Grafana/Alloy；兩種 logs 分流；provisioning 版本化 [S14–S16] | P0 起 |
@@ -87,7 +87,7 @@ OIDC＋viewer/editor/publisher/auditor；伺服器強制 tenant ACL，cookie 模
 | P0 | AG-001 workspace/locks/CPU Compose；002 pinned Gateway+mock backends；003 HTTP/ExtMCP stubs；004 negative contracts＋context/coverage/deadline＋minimal telemetry | **G0-WIRE/CONTEXT/COVERAGE/DEADLINE** 全有真實 evidence。原版 fall-through 診斷不是 protected PASS；request deny 上游零，response deny client 洩漏零，合法 controls 成功。缺 CEL context/field matrix 不 activate |
 | P1 | AG-101 schema/pure reducer；102 trusted identity；103 Presidio/secrets；104 mutation/limits；105 JSONL/metrics/CLI stage/activate | golden cases、replay、必需 detector 故障拒絕、最小稽核；保持 P0 gates，全拒絕不能偽通過 |
 | P2 | AG-201 method/backend/tool auth；202 list filter；203 mutation 再授權；204 cache/pagination/revocation；205 error protection | **G2-MUTATION/G2-ERROR**。隱藏工具仍不可直接 call；error.message/data run-specific canary 不出 client；backend_attested 永不等於 protected |
-| P3 | AG-301 worker contracts/limits；302 pplx parity；303 SingGuard adapters；304 separate-arm bake-off；305 optional rails/validators | **G3-STATS**：預註冊 CI/power/family/樣本，FPR upper、recall lower 及 availability/utility 同過；B4a PII 與 B4b injection 分開歸因 |
+| P3 | AG-301 worker contracts/limits；302 pplx parity；303 SingGuard adapters；304 separate-arm bake-off；305 optional rails/validators 實驗與驗收 | **G3-STATS**：預註冊 CI/power/family/樣本，FPR upper、recall lower 及 availability/utility 同過；B4a PII 與 B4b injection 分開歸因；AG-305 未驗收不可成為 production 相依 |
 | P4 | AG-401 FastAPI/DB/RBAC；402 catalog/form/YAML；403 validate/simulate/diff；404 stage/ACK/activate/rollback；405 decision drilldown/Grafana | 缺 evidence/能力不可發布；跨 tenant 拒絕；並行編輯、版本偏斜、rollback/API/browser E2E |
 | P5 | AG-501 registry/license；502 Promptfoo；503 PyRIT；504 DeepTeam；505 scheduled comparisons | **G5-ORACLE**：success predicate、budget、canary seed 先註冊；lineage split 不汙染；unknown/timeouts 不偽裝安全；發版 gate 進 CI |
 | P6 | AG-601 network/mTLS/secrets；602 audit durability/integrity；603 load/chaos；604 SBOM/offline；605 recovery/upgrade | bypass、disk-full、OOM、timeout、restart、version skew 可重現；指定硬體/負載 SLO 通過 |

@@ -1,6 +1,6 @@
 # 一手來源與證據狀態
 
-2026-09-17 review 修訂。`[S#]` 對應下表；latest 網頁只是查核参考，部署須固定 revision/digest。文件/來源級推論、Python helper 自測、原生 Serde、真實 Gateway E2E、模型 benchmark 是不同層級。
+2026-09-17 review 修訂。`[S#]` 對應下表；latest 網頁只是查核參考，部署須固定 revision/digest。文件/來源級推論、Python helper 自測、原生 Serde、真實 Gateway E2E、模型 benchmark 是不同層級。
 
 | ID | 一手來源 | 引用範圍 |
 |---|---|---|
@@ -11,7 +11,7 @@
 | S5 | [Presidio](https://presidio.dataprivacystack.org/) | recognizers/anonymization；locale/entity 支持待驗收 |
 | S6 | [pplx-pii model](https://huggingface.co/perplexity-ai/pplx-pii-masking) | token classification、4,096-token truncation、span/sensitivity |
 | S7 | [pplx vLLM packaging](https://huggingface.co/perplexity-ai/pplx-pii-masking-vllm) | pooling/logits/postprocess；打包和原版授權分審 |
-| S8 | [SingGuard-NSFA repo](https://github.com/inclusionAI/SingGuard-NSFA)、[model card](https://huggingface.co/inclusionAI/SingGuard-NSFA-9B) | 分類 heads/生成模式、单輪文字 scope；作者 benchmark 非本機 SLA |
+| S8 | [SingGuard-NSFA repo](https://github.com/inclusionAI/SingGuard-NSFA)、[model card](https://huggingface.co/inclusionAI/SingGuard-NSFA-9B) | 分類 heads/生成模式、單輪文字 scope；作者 benchmark 非本機 SLA |
 | S9 | [NeMo Guardrails](https://docs.nvidia.com/nemo/guardrails/about-nemo-guardrails-library/overview) | 選用流程/對話 rails；API/runtime 固定後驗收 |
 | S10 | [Guardrails AI](https://github.com/guardrails-ai/guardrails) | validators、PyPI migration/hosted inference 公告；不假定舊雲端路徑可離線 |
 | S11 | [Promptfoo red teaming](https://www.promptfoo.dev/docs/red-team/) | 第一個 runner；本地 provider/egress 仍需實測 |
@@ -46,4 +46,4 @@ SingGuard 同名研究不混用；分類 heads 不用生成 latency 代替。ppl
 
 目前環境缺 Docker/nerdctl/GPU/Rust runtime，外部網路解析亦不可用於本機下載。完成來源查核與 Python 非 masking wire/statistics/accounting helper 自測；**未執行原生 Serde、真實 Gateway/Compose、vLLM/GPU、資料集或 browser tests**。Helper 的 PASS 不填補 runtime gate；所有效能/安全結果須由後續真實 evidence 支持。
 
-本变更不納入第三方模型/資料原文，不修改專案 LICENSE。原始規劃在 git 歷史可查；本次主要修正規範與驗收可執行性，而非宣稱完成 production 實作。
+本變更不納入第三方模型/資料原文，不修改專案 LICENSE。原始規劃在 git 歷史可查；本次主要修正規範與驗收可執行性，而非宣稱完成 production 實作。

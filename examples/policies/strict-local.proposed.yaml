@@ -1,5 +1,5 @@
 # Proposed AgentGuard schema, NOT native AgentGateway configuration.
-# No compiler/runtime is supplied by this documentation change.
+# No full policy compiler/runtime is supplied by this documentation change.
 apiVersion: agentguard.dev/v1alpha1
 kind: PolicyBundle
 metadata:
@@ -14,7 +14,14 @@ spec:
     compatibilityEvidenceRef: null # Missing evidence MUST reject activation.
     webhookActionBoundary: strict_verified
     requiredTrustedContext: [original_path, original_media_type, effective_stream, requested_model]
-    fieldCoverageOracle: external_per_version
+    fieldCoverageOracle:
+      mode: external_digest_bound
+      bindTo: [gateway_image, gateway_config, compiler, adapter]
+      requireArtifactSha256: true
+      requireTrustedProvenance: true
+      rejectMissing: true
+      rejectExpired: true
+      rejectDigestMismatch: true
     rejectUnknownFieldsBeforeNormalization: true
     onMissingEvidence: reject_activation
     webhookBudgetMs: 8000 # Proposed, not measured.
