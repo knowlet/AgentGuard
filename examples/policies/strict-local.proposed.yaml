@@ -10,6 +10,16 @@ spec:
   identity:
     requireVerifiedSubject: true
     tenantSource: verified_claim
+  deploymentRequirements:
+    compatibilityEvidenceRef: null # Missing evidence MUST reject activation.
+    webhookActionBoundary: strict_verified
+    requiredTrustedContext: [original_path, original_media_type, effective_stream, requested_model]
+    fieldCoverageOracle: external_per_version
+    rejectUnknownFieldsBeforeNormalization: true
+    onMissingEvidence: reject_activation
+    webhookBudgetMs: 8000 # Proposed, not measured.
+    transportReserveMs: 500
+    safetyMarginMs: 1000
   llm:
     allowedEndpoints: [/v1/chat/completions]
     allowedContentTypes: [application/json]
@@ -21,6 +31,8 @@ spec:
     requireBackendQualifiedTool: true
     allowRequestIdentityMutation: false
     errorResponseProtection: required
+    errorResponseMode: error_sanitized
+    allowBackendAttestationAsProtection: false
   detectors:
     - id: presidio-local
       purpose: pii
@@ -32,6 +44,7 @@ spec:
       action: deny
   failures:
     requiredDetector: deny
+    missingTrustedContext: deny
     invalidMutation: deny
     unknownCapability: deny
     auditAppend: deny
