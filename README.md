@@ -16,6 +16,7 @@ PromptGuard 保護 LLM request/response、PII、secret 與 deterministic decisio
 | [協定與 policy](docs/protocol-contracts.md) | wire、可信 context、外部 coverage oracle、ExtMCP/error 邊界 |
 | [Assurance／部署營運](docs/assurance-and-operations.md) | PII/injection 分開的對照組、多語資料、CI/availability、Compose/vLLM/雙 logs |
 | [Review 硬 gate](docs/review-gates.md) | G0/G2/G3/G5 fixtures、可失敗斷言、CI 邊界、canary/timeout/oracle |
+| [Review 核驗與樣本規劃](docs/review-verification.md) | 20 項本地自測、CI／power 差異、可執行事前樣本規劃與 NOT_RUN 邊界 |
 | [一手來源與證據](docs/sources.md) | S1–S27 與尚未實跑的能力 |
 | [Policy 草案](examples/policies/strict-local.proposed.yaml) | proposed schema；缺 evidence 必須拒絕 activation，不是 Gateway 原生配置 |
 
@@ -24,9 +25,11 @@ PromptGuard 保護 LLM request/response、PII、secret 與 deterministic decisio
 ```bash
 python -m unittest discover -s tests -v
 python tools/assurance_contract.py --stats
+python -m tools.plan_statistics --metric fpr --threshold 0.02 --expected-rate 0.01 --power 0.80
+python -m tools.plan_statistics --metric recall --threshold 0.95 --expected-rate 0.97 --power 0.90
 ```
 
-測試涵蓋非 masking canonical action、負向 fixture、Wilson rate gate、timeout/unknown 記帳。它們**不是原生 Serde 重現、Gateway adapter、Gateway E2E 或模型 benchmark**。Masking 尚未在 helper 實作，刻意拒絕；原版 Gateway 的 source-derived 行為列在 fixtures，不冒充 runtime 觀察。
+測試涵蓋非 masking canonical action、負向 fixture、Wilson rate gate、timeout/unknown 記帳，以及固定 n 的單項 CI gate power 規劃。它們**不是原生 Serde 重現、Gateway adapter、Gateway E2E 或模型 benchmark**。Masking 尚未在 helper 實作，刻意拒絕；原版 Gateway 的 source-derived 行為列在 fixtures，不冒充 runtime 觀察。planner 必須在收集 holdout 前使用，不能用於測到過關才停止；不計算 multiplicity 或 joint release power。
 
 P0 需真實 Gateway 跑 G0-WIRE/CONTEXT/COVERAGE/DEADLINE；原版漏洞重現成功不是 protected PASS。P0 只報協定/context/coverage/counters/故障延遲，ASR/FPR 為 NOT_EVALUATED。P2 必須以含秘密的 MCP errors 驗收 sanitizer；backend attestation 不等於 protected。
 
