@@ -1,0 +1,20 @@
+services:
+  diagnostic:
+    profiles: [cpu-e2e]
+    platform: linux/amd64
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12-slim}
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=128m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 1g
+    cpus: 2
+    environment:
+      PYTHONDONTWRITEBYTECODE: '1'

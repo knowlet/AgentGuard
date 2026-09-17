@@ -1,0 +1,36 @@
+name: p0-stock-diagnostic
+on:
+  pull_request:
+  push:
+    branches: [develop]
+permissions:
+  contents: read
+jobs:
+  real-gateway-diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact event commit
+        env:
+          REPOSITORY: ${{ github.repository }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --depth=1 origin "$COMMIT"
+          git checkout --detach FETCH_HEAD
+      - name: Unit and fixture tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Fetch checksum-pinned stock Gateway
+        run: python3 -m tools.fetch_gateway --output "$RUNNER_TEMP/agentgateway"
+      - name: Reproduce stock wire behavior (NOT a protected gate)
+        run: python3 -m tools.gateway_probe --gateway-bin "$RUNNER_TEMP/agentgateway" --report reports/gateway-stock.json
+      - name: Preserve diagnostic evidence in job log
+        if: always()
+        run: |
+          for f in reports/gateway-stock.json reports/gateway-stock.gateway.log; do
+            if [ -f "$f" ]; then
+              printf '\n=== %s ===\n' "$f"
+              cat "$f"
+            fi
+          done
