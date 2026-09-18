@@ -1,0 +1,49 @@
+name: p0-protected
+on:
+  pull_request:
+    branches: [develop]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: p0-protected-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  inputs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact event commit without persistent credentials
+        env:
+          REPOSITORY: ${{ github.repository }}
+          COMMIT: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          AUTH=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          echo "::add-mask::$AUTH"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $AUTH" \
+          GIT_TERMINAL_PROMPT=0 git fetch --depth=1 origin "$COMMIT"
+          unset AUTH GH_TOKEN
+          git checkout --detach FETCH_HEAD
+      - name: Preserve exact build inputs (not a security PASS)
+        run: |
+          mkdir -p "$RUNNER_TEMP/inputs"
+          git archive --format=tar HEAD > "$RUNNER_TEMP/inputs/agentguard.tar"
+          git init "$RUNNER_TEMP/upstream"
+          git -C "$RUNNER_TEMP/upstream" fetch --depth=1 https://github.com/agentgateway/agentgateway.git fe6732474a96a0363dfb9822859af4e9bab360fa
+          git -C "$RUNNER_TEMP/upstream" checkout --detach FETCH_HEAD
+          test "$(git -C "$RUNNER_TEMP/upstream" rev-parse HEAD)" = fe6732474a96a0363dfb9822859af4e9bab360fa
+          git -C "$RUNNER_TEMP/upstream" archive --format=tar HEAD > "$RUNNER_TEMP/inputs/upstream.tar"
+          python3 -m tools.fetch_gateway --output "$RUNNER_TEMP/inputs/agentgateway-stock"
+          (cd "$RUNNER_TEMP/inputs" && sha256sum agentguard.tar upstream.tar agentgateway-stock > SHA256SUMS)
+      - name: Upload reproducible inputs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: p0-build-inputs
+          path: ${{ runner.temp }}/inputs/
+          if-no-files-found: error
+          retention-days: 7
