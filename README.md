@@ -2,37 +2,65 @@
 
 AgentGuard 是以 **AgentGateway 作為 enforcement plane** 的 protocol-aware agent security stack。
 
-> 狀態：規劃與驗收契約，尚無可部署 Guard stack。2026-09-17 review 修訂：v1.5.0 是相容性／漏洞重現基線，已知 untagged webhook action fall-through 未被本 PR 修補，不能宣稱它通過 protected deployment gate。
+> 狀態：P0 實作中，尚無 production-ready Guard stack。已有真實 Gateway／Compose 診斷、evidence preflight，以及固定 v1.5.0 的下游 strict webhook parser patch。**原版 v1.5.0 仍有已重現的 fail-open；下游 patch 的 scoped wire 驗收不等於完整 P0、PII 或 prompt-injection 防護。** 實際結果須查看對應 commit 的 CI 與 raw artifacts。
 
-## 系統邊界
+## 目前實作與能力邊界
 
-PromptGuard 保護 LLM request/response、PII、secret 與 deterministic decisions；MCPGuard 透過 ExtMCP 執行 method/tool authorization、tools/list mutation。Assurance 是隔離的測試平面；Policy Studio 為 FastAPI control plane＋browser，負責 catalog/表單/驗證/模擬/版本發布。Prometheus、Loki、Grafana provisioning、Alloy 提供 observability，Guard JSONL 與 Gateway OTLP access logs 分流。
+| 部分 | 已提供 | 不代表 |
+|---|---|---|
+| Stock diagnostic | checksum-pinned 真實 AgentGateway、HTTP fixtures、upstream counters、mask 結構檢查、CPU Compose | 診斷綠燈只代表 VULNERABILITY_REPRODUCED，不是 protected PASS |
+| Strict wire patch | 在 Gateway 內驗證唯一 action、物件形狀、欄位與型別、phase、reject status、HTTP 故障；exact-source installer | 不是上游官方 release 修復，也不是另一個 reverse proxy |
+| Patched acceptance | 6 個合法 controls、84 個負向 phase cases、8 個 transport faults；Serde、native Gateway、Compose 分層驗證 | 不涵蓋原始 request field coverage、所有 timeout/load、MCP 或 detector 效果 |
+| Evidence preflight | artifact hash、Gateway/config/compiler/adapter digests、scope、freshness、必要 context/coverage/gates | 不是完整 policy compiler、簽章驗證服務或 route activation |
+| 統計與結果契約 | Wilson CI、固定樣本規劃、獨立 availability-fault 記帳與回歸測試 | 不是已執行的模型 benchmark 或完整 joint release evaluator |
 
-## 規劃文件
+### CPU 測試
+
+在 repository root 執行；stock binary／Compose profile 限 Linux/amd64，無需 GPU 或模型 API key。
+
+```bash
+python3 -m unittest discover -s tests -v
+python3 -m tools.fetch_gateway --output /tmp/agentgateway-v1.5.0
+python3 -m tools.gateway_probe --gateway-bin /tmp/agentgateway-v1.5.0 --report reports/gateway-stock.json
+docker compose -f deploy/compose/compose.yaml --profile cpu-e2e run --build --rm diagnostic
+```
+
+Stock 結果應為 `diagnostic_status=VULNERABILITY_REPRODUCED`、`protected_wire_gate=FAIL`。不能用 stock workflow 的綠燈替代 protected release gate。
+
+### 下游 patch 與真實驗收
+
+設計、breaking wire contract 與限制見 [ADR-001](docs/adr-001-strict-gateway-wire.md)。[完整 CI workflow](.github/workflows/p0-patched.yml) 固定 upstream commit 與 Cargo.lock，套 patch、編譯 Gateway、產生包含實際 binary SHA-256 的 manifest，再跑原生及 Compose E2E。每次都有 source snapshot 與 raw evidence artifacts；單看 workflow 名稱或某個 unit step 不足以宣稱 PASS。
+
+`deploy/compose/compose.patched.yaml` **需要先完成上述 build**，準備 `reports/patched-bin/agentgateway` 與 `reports/patch-manifest.json`；不能在 fresh checkout 直接假定 binary 已存在。兩個 Compose profiles 都是封閉測試環境，不是執行不可信程式碼的 production sandbox。
+
+```text
+Stock diagnostic:     VULNERABILITY_REPRODUCED / protected wire FAIL
+Patched acceptance:   PASS、FAIL 或 ERROR，依該次實際 observations 計算
+Full P0 release:      NOT_EVALUATED
+ASR / FPR:            NOT_EVALUATED
+```
+
+## 後續產品架構
+
+PromptGuard 將保護 LLM request/response、PII、secret 與 deterministic decisions；MCPGuard 將透過 ExtMCP 執行 method/tool authorization、tools/list mutation。Assurance 是隔離測試平面；Policy Studio 為 FastAPI control plane＋browser，負責 catalog、表單、驗證、模擬與版本發布。Observability 規劃使用 Prometheus、Loki、Grafana provisioning、Alloy；Guard JSONL 與 Gateway OTLP access logs 分流。這些完整服務、detectors 與 UI 尚未交付。
+
+P0 下一步是 G0-CONTEXT／COVERAGE／DEADLINE：可信身分及 CEL context、normalize 前封閉原始 schema、外部 per-digest field matrix、包含 queue/audit 的 deadline 故障測試。缺 evidence 的 strict policy 不可 activate。P2 另須驗證 MCP error sanitizer；backend attestation 永遠不等於 protected。
+
+Detector 提供 evidence，不能授權；tools/list 隱藏不能替代 tools/call 授權；unknown／缺 context／缺 evidence 不靜默 allow。
+
+## 文件與規劃
 
 | 文件 | 內容 |
 |---|---|
-| [技術選型與 P0–P6](docs/implementation-plan.md) | 元件取捨、架構、Studio、PR-sized backlog 與 exit gates |
-| [協定與 policy](docs/protocol-contracts.md) | wire、可信 context、外部 coverage oracle、ExtMCP/error 邊界 |
-| [Assurance／部署營運](docs/assurance-and-operations.md) | PII/injection 分開的對照組、多語資料、CI/availability、Compose/vLLM/雙 logs |
-| [Review 硬 gate](docs/review-gates.md) | G0/G2/G3/G5 fixtures、可失敗斷言、CI 邊界、canary/timeout/oracle |
-| [Review 核驗與樣本規劃](docs/review-verification.md) | 20 項本地自測、CI／power 差異、可執行事前樣本規劃與 NOT_RUN 邊界 |
-| [一手來源與證據](docs/sources.md) | S1–S27 與尚未實跑的能力 |
-| [Policy 草案](examples/policies/strict-local.proposed.yaml) | proposed schema；缺 evidence 必須拒絕 activation，不是 Gateway 原生配置 |
+| [P0 第一個實作切片](docs/p0-implementation.md) | stock diagnostic、evidence preflight 與起始驗證範圍 |
+| [Strict parser ADR](docs/adr-001-strict-gateway-wire.md) | 下游 patch、canonical wire、驗收與建置修正 |
+| [技術選型與 P0–P6](docs/implementation-plan.md) | 架構、元件取捨、PR-sized backlog 與 exit gates |
+| [協定與 policy](docs/protocol-contracts.md) | wire、可信 context、coverage oracle、ExtMCP/error 邊界 |
+| [Review 硬 gate](docs/review-gates.md) | fixtures、oracle、統計／故障與 release gates |
+| [Assurance／部署營運](docs/assurance-and-operations.md) | PII/injection 對照組、多語資料、Compose/vLLM／雙 logs |
+| [一手來源與證據](docs/sources.md) | 原始設計的 S1–S27 來源與限制 |
+| [Policy 草案](examples/policies/strict-local.proposed.yaml) | 唯一 proposed schema 範例；不是 Gateway 原生配置 |
 
-## 可執行的測試輔助程式
+2026-09-17 的 review-verification、sources 與規劃文件保留當時的驗證快照；其中的 NOT_RUN 描述不應覆蓋後續 CI 的實際結果，也不能反過來把新版本的測試追溯套用舊版本。
 
-```bash
-python -m unittest discover -s tests -v
-python tools/assurance_contract.py --stats
-python -m tools.plan_statistics --metric fpr --threshold 0.02 --expected-rate 0.01 --power 0.80
-python -m tools.plan_statistics --metric recall --threshold 0.95 --expected-rate 0.97 --power 0.90
-```
-
-測試涵蓋非 masking canonical action、負向 fixture、Wilson rate gate、timeout/unknown 記帳，以及固定 n 的單項 CI gate power 規劃。它們**不是原生 Serde 重現、Gateway adapter、Gateway E2E 或模型 benchmark**。Masking 尚未在 helper 實作，刻意拒絕；原版 Gateway 的 source-derived 行為列在 fixtures，不冒充 runtime 觀察。planner 必須在收集 holdout 前使用，不能用於測到過關才停止；不計算 multiplicity 或 joint release power。
-
-P0 需真實 Gateway 跑 G0-WIRE/CONTEXT/COVERAGE/DEADLINE；原版漏洞重現成功不是 protected PASS。P0 只報協定/context/coverage/counters/故障延遲，ASR/FPR 為 NOT_EVALUATED。P2 必須以含秘密的 MCP errors 驗收 sanitizer；backend attestation 不等於 protected。
-
-Detector 提供 evidence，不能授權；tools/list 隱藏不能代替 tools/call 授權；unknown/缺 context/缺 evidence 不靜默 allow。沒有有效 policy snapshot 與已證明能力的 strict route 不啟用。
-
-本 PR 未執行 Compose、Gateway runtime、vLLM/GPU 或資料集 benchmark。專案 LICENSE 待維護者決定；第三方程式碼、模型與資料分別審查授權。
+專案 LICENSE 未變更。第三方程式碼、模型與資料分別審查授權；本階段未加入第三方模型權重或資料集原文。
