@@ -1,0 +1,12 @@
+# Same immutable Python base observed in the preceding successful CPU diagnostic.
+FROM python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+WORKDIR /app
+COPY tools/ tools/
+COPY patches/ patches/
+COPY tests/fixtures/ tests/fixtures/
+COPY reports/patch-manifest.json /app/build-manifest.json
+COPY reports/patched-bin/agentgateway /usr/local/bin/agentgateway
+RUN mkdir /evidence && chown 65532:65532 /evidence
+USER 65532:65532
+ENTRYPOINT ["python", "-m", "tools.gateway_acceptance", "--gateway-bin", "/usr/local/bin/agentgateway", "--build-manifest", "/app/build-manifest.json", "--report", "/evidence/gateway-patched.json"]
