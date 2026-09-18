@@ -1,7 +1,8 @@
 name: p0-patched-wire
 on:
+  # Deliberately unfiltered: a stacked P0 branch must get the same real-Gateway
+  # gate as a develop-targeted PR instead of inheriting an earlier head's green run.
   pull_request:
-    branches: [develop]
   workflow_dispatch:
 permissions:
   contents: read
@@ -102,7 +103,7 @@ jobs:
   accept:
     needs: build
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     env:
       BUILD_MANIFEST_SHA256: ${{ needs.build.outputs.manifest_sha256 }}
       COMPOSE_PROJECT_NAME: agentguard-patched-${{ github.run_id }}-${{ github.run_attempt }}
@@ -129,18 +130,20 @@ jobs:
           artifact-ids: ${{ needs.build.outputs.artifact_id }}
           path: reports
           merge-multiple: true
-      - name: Real patched Gateway wire and context acceptance
+      - name: Real patched Gateway wire, context and deadline acceptance
         run: |
           set -euo pipefail
           python3 -m tools.gateway_acceptance --gateway-bin reports/patched-bin/agentgateway --build-manifest reports/patch-manifest.json --report reports/gateway-patched.json
           python3 -m tools.context_probe --gateway-bin reports/patched-bin/agentgateway --build-manifest reports/patch-manifest.json --report reports/context.json
-      - name: Real patched Gateway and context in isolated Compose
+          python3 -m tools.deadline_probe --gateway-bin reports/patched-bin/agentgateway --build-manifest reports/patch-manifest.json --report reports/deadline.json
+      - name: Real patched Gateway, context and deadline in isolated Compose
         run: |
           set -euo pipefail
           docker compose -f deploy/compose/compose.patched.yaml config --quiet
           docker compose -f deploy/compose/compose.patched.yaml run --build --rm patched-wire
           docker compose -f deploy/compose/compose.patched.yaml run --rm --entrypoint python patched-wire -m tools.context_probe --gateway-bin /usr/local/bin/agentgateway --build-manifest /app/build-manifest.json --report /evidence/context.json
-          docker compose -f deploy/compose/compose.patched.yaml run --rm --entrypoint python patched-wire -c 'import json; from pathlib import Path; assert json.loads(Path("/evidence/gateway-patched.json").read_text())["protected_wire_gate"]=="PASS"; assert json.loads(Path("/evidence/context.json").read_text())["context_slice_gate"]=="PASS"; assert Path("/evidence/gateway-patched.gateway.log").stat().st_size>0; print("persisted evidence verified")'
+          docker compose -f deploy/compose/compose.patched.yaml run --rm --entrypoint python patched-wire -m tools.deadline_probe --gateway-bin /usr/local/bin/agentgateway --build-manifest /app/build-manifest.json --report /evidence/deadline.json
+          docker compose -f deploy/compose/compose.patched.yaml run --rm --entrypoint python patched-wire -c 'import json; from pathlib import Path; d=json.loads(Path("/evidence/deadline.json").read_text()); assert json.loads(Path("/evidence/gateway-patched.json").read_text())["protected_wire_gate"]=="PASS"; assert json.loads(Path("/evidence/context.json").read_text())["context_slice_gate"]=="PASS"; assert d["deadline_gate"]=="PASS" and d["registered_cases"]==9; assert d["guard_deadline_decisions"] and d["gateway_timeouts"] and d["upstream_transport_faults"]; assert Path("/evidence/gateway-patched.gateway.log").stat().st_size>0; print("persisted evidence verified")'
       - name: Collect Compose evidence and remove only this job's resources
         if: always()
         run: |
