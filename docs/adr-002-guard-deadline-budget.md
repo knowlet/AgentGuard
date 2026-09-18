@@ -7,7 +7,7 @@
 v1.5.0 對 webhook backend 插入 10 秒 `BackendRequestTimeout` [S25]。那是**有效 Gateway timeout**，不是整段 LLM 的 latency SLO。本切片把三件事分開：
 
 1. **宣告閘門**（`agentguard/deadline.py`）：guard budget 只能由固定 stage 名稱組成、值必須是非負整數、margin 至少 1,000 ms，且 `guard_budget + transport_reserve + safety_margin < effective_gateway_timeout`。目前宣告 queue／parse／detector／adjudication／serialization／audit 共 1,500 ms、reserve 500 ms、margin 1,000 ms，合計 3,000 ms < 10,000 ms。
-2. **guard 結果**：adapter 自己超過預算時，決策仍**送達** Gateway 並回 HTTP 503；Gateway 自己的 access log 會記錄 `"action": "reject"`。這是 guard decision，不是 policy deny，也不是攻防成功。
+2. **guard 結果**：adapter 自己超過預算時，決策仍**送達** Gateway。webhook 本身回 HTTP 200，只有 action 內帶 `status_code: 503`；client 看到 503 是 Gateway 套用該 action 的結果，Gateway 也會在 access log 記錄 `"action": "reject"`。這是 guard decision，不是 policy deny，也不是攻防成功。
 3. **Gateway 結果**：hook 沒有回答時，原因是 Gateway 產生的，只能用 Gateway 自己的 log 判定為 `upstream call timeout`（真正的 10 秒逾時）或 `connection closed before message completed`（hook 提前死亡）。**兩者都以 availability fault 記帳，都不得算成防禦，但只有前者可以拿來支持 timeout 邊界。**
 
 ## 為什麼用 fixture-modeled adapter
@@ -24,13 +24,13 @@ v1.5.0 對 webhook backend 插入 10 秒 `BackendRequestTimeout` [S25]。那是*
 |---|---|---|
 | 預算內 | inside_budget request／response（1,200 ms） | HTTP 200；兩筆決策依序為已送達的 request allow 與 response allow；上游 1 次；結構與 marker 符合；Gateway log 沒有 timeout／transport／reject marker |
 | 邊界內 | at_budget_boundary_request（= 1,500 ms） | 花完預算仍算在預算內（比較為嚴格大於） |
-| 超預算 | just_over_budget request／response（1,501 ms）、over_budget_request（4,000 ms） | HTTP 503 加固定 body；slow decision 已送達且為 `GUARD_DEADLINE_EXCEEDED`；elapsed < 9,000 ms；Gateway log 必須是該 phase 的 `"action": "reject"`，且不得出現 timeout／transport marker |
+| 超預算 | just_over_budget request／response（1,501 ms）、over_budget_request（4,000 ms） | client-visible HTTP 503 加固定 body（Gateway 套用已送達 action 的 `status_code: 503`）；slow decision 已送達且為 `GUARD_DEADLINE_EXCEEDED`；elapsed < 9,000 ms；Gateway log 必須是該 phase 的 `"action": "reject"`，且不得出現 timeout／transport marker |
 | Gateway 逾時 | unbounded_stage request／response（11,000 ms） | HTTP 4xx／5xx（閘門接受 400–599，本 head 實測 503）；slow decision **未送達**（`decision_write=failed`）；Gateway log 必須是該 phase 的 `upstream call timeout`，且不得出現 transport marker |
 | 提前斷線（負向 control） | early_disconnect_request（9,000 ms 後關閉連線） | HTTP 4xx／5xx（本 head 實測 503）；slow decision 未送達且 `decision_write=not_attempted`；Gateway log 必須是該 phase 的 `connection closed before message completed`，且**不得**出現 timeout marker |
 
-超預算列的 HTTP 503 是閘門硬性要求（guard 自己回的 status code），Gateway 故障列的 status 只要求 4xx／5xx，因為那是 Gateway 決定的。
+超預算列的 HTTP 503 是 Gateway 套用已送達 guard action 中的 `status_code: 503` 後對 client 產生的結果；Gateway 故障列的 status 只要求 4xx／5xx，因為那是 Gateway 決定的。兩個層級不同：webhook 回給 Gateway 的 HTTP status，以及 action 決定 client 看到的 status。
 
-每個 case 的**決策契約**逐筆比對：phase 身分與順序、是否為 slow phase、`allowed`／`reason`／`delivered`／`decision_write` 的型別與值。凡是已走到 response 的 case，前置 request 必須是明確且**已送達的 allow**；只有註冊的 slow phase 可以是 deadline deny 或未送達。決策筆數等於 request／response 的預期呼叫數。
+每個 case 的**決策契約**逐筆比對：phase 身分與順序、是否為 slow phase、`allowed`、`reason`（`GUARD_DEADLINE_EXCEEDED`）、`delivered` 與 `decision_write`（`ok`／`failed`／`not_attempted`）的型別與值。凡是已走到 response 的 case，前置 request 必須是明確且**已送達的 allow**；只有註冊的 slow phase 可以是 deadline deny 或未送達。決策筆數等於 request／response 的預期呼叫數。
 
 Gateway 端的證據綁定在**單次呼叫的 log slice**（offset、長度、SHA-256 都寫進報告），因此分類是「Gateway 說發生什麼」，不是「花了多久」。client 可見的狀態也必須等於 Gateway access log 內同一次請求的 `http.status`。
 

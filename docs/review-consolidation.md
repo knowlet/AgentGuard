@@ -14,12 +14,21 @@ between `develop` and the branch that carried #8.
 
 The P0 deadline slice (PR #9) was stacked on #8 and is now retargeted to
 `develop`. Because #8 landed as a **squash**, a branch that still carries #8's
-original commits has no shared history with `develop` beyond the pre-#8 base, so
-GitHub's three-dot diff re-includes #8's files next to the new slice. That is a
-display artifact of the squash, not a second copy of the work: the three files
-the deadline slice also edits (`tools/gateway_acceptance.py`, `README.md`,
-`.github/workflows/p0-patched.yml`) are the only ones whose content differs from
-`develop`, and each difference is the slice's own addition.
+original commits shares no history with `develop` beyond the pre-#8 base, so a
+three-dot diff re-includes #8's files next to the new slice. That is a display
+artifact of the squash, not a second copy of the work.
+
+It also made git report add/add conflicts, because the merge base does not
+contain the files #8 introduced. The branch therefore merges `develop` back in
+(commit `9588c34`) after checking that `develop`'s tree is byte-identical to
+`ff92f4c`, the commit the slice was cut from: `git diff --name-only origin/develop
+ff92f4c` is empty, so resolving to the branch's tree drops nothing from develop.
+After that merge the PR diff is exactly the slice's eight files. Of the files #8
+re-included, three also appear here and are edited by the slice's own addition -
+`tools/gateway_acceptance.py`, `README.md` and `.github/workflows/p0-patched.yml`
+- while the slice additionally adds `agentguard/deadline.py`,
+`tools/deadline_probe.py`, `tests/test_deadline_slice.py`,
+`docs/adr-002-guard-deadline-budget.md` and updates `docs/review-consolidation.md`.
 
 | Review concern | Canonical implementation and executable evidence |
 |---|---|
