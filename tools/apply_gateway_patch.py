@@ -32,6 +32,12 @@ def patched_source(raw: bytes) -> bytes:
         if text.count(old) != 1:
             raise ValueError('missing exact action patch anchor')
         text = text.replace(old, new)
+    # HTTP-level failure cannot be turned into allow by a syntactically valid body.
+    anchor = '\tlet parsed = json::from_response_body(res).await?;'
+    if text.count(anchor) != 2:
+        raise ValueError('missing exact transport patch anchors')
+    text = text.replace(anchor, '\tif res.status() != ::http::StatusCode::OK {\n'
+                        '\t\treturn Err(anyhow::anyhow!("AG_WIRE_HTTP_STATUS"));\n\t}\n' + anchor)
     text += '\n#[path = "agentguard_strict_wire.rs"]\nmod agentguard_strict_wire;\n'
     for action, phase in (('RequestAction', 'Request'), ('ResponseAction', 'Response')):
         text += '''
@@ -60,6 +66,10 @@ def apply(source: Path, manifest: Path) -> dict:
     revision = subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()
     if revision != UPSTREAM_REVISION:
         raise ValueError('UPSTREAM_REVISION_MISMATCH')
+    dirty = subprocess.check_output(['git', '-C', str(source), 'status', '--porcelain',
+                                     '--untracked-files=normal'], text=True).strip()
+    if dirty:
+        raise ValueError('UPSTREAM_WORKTREE_NOT_CLEAN')
     target = source / WEBHOOK_PATH
     raw = target.read_bytes()
     output = patched_source(raw)

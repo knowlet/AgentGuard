@@ -96,7 +96,11 @@ def fixtures():
                 self.close_connection = True
                 self.connection.shutdown(socket.SHUT_RDWR)
                 return
-            raw = b'invalid-json' if fault == 'non_json' else b'{"action":'
+            # An HTTP error carries VALID allow JSON: status and JSON failures are isolated.
+            if fault == 'http_error':
+                raw = b'{"action":{"reason":"FAULT_MUST_NOT_ALLOW"}}'
+            else:
+                raw = b'invalid-json' if fault == 'non_json' else b'{"action":'
             self.send_response(500 if fault == 'http_error' else 200)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Content-Length', str(len(raw) + (50 if fault == 'truncated' else 0)))
@@ -125,13 +129,44 @@ def negative_cases() -> list[dict]:
     return cases
 
 
-def acceptance_status(controls: list, rows: list, faults: list, expected_negatives: int) -> str:
-    if len(controls) != 6 or len(rows) != expected_negatives or len(faults) != len(FAULTS) * 2:
+def strict_rejection(row: dict) -> bool:
+    try:
+        phase = row['phase']
+        if phase not in ('request', 'response'):
+            return False
+        expected = {'request': 1, 'response': 0 if phase == 'request' else 1,
+                    'upstream': 0 if phase == 'request' else 1}
+        return row['counts'] == expected and stock.rejected_without_leak(row)
+    except (KeyError, TypeError):
+        return False
+
+
+def acceptance_status(controls: list, rows: list, faults: list, cases: list | None = None) -> str:
+    """Require exact case identity and recompute assertions from observations, not flags."""
+    if cases is None:
+        cases = negative_cases()
+    expected_rows = {(c['id'], phase) for c in cases for phase in c['phases']}
+    expected_controls = {(phase + '_' + action, phase) for phase in ('request', 'response')
+                         for action in ('allow', 'deny', 'mask')}
+    expected_faults = {(fault, phase) for fault in FAULTS for phase in ('request', 'response')}
+    for group, expected in ((controls, expected_controls), (rows, expected_rows), (faults, expected_faults)):
+        if not isinstance(group, list) or len(group) != len(expected):
+            return 'FAIL'
+        try:
+            if {(r['id'], r['phase']) for r in group} != expected:
+                return 'FAIL'
+            if not all(r.get('assertion_passed') is True for r in group):
+                return 'FAIL'
+        except (KeyError, TypeError, AttributeError):
+            return 'FAIL'
+    try:
+        if not all(stock.control_passes(r, r['id'].split('_', 1)[1]) for r in controls):
+            return 'FAIL'
+        if not all(strict_rejection(r) for r in rows + faults):
+            return 'FAIL'
+    except (KeyError, TypeError):
         return 'FAIL'
-    keys = {(r.get('id'), r.get('phase')) for r in rows}
-    if len(keys) != len(rows):
-        return 'FAIL'
-    return 'PASS' if all(r.get('assertion_passed') is True for r in controls + rows + faults) else 'FAIL'
+    return 'PASS'
 
 
 def run(binary: Path, manifest: Path, report_path: Path) -> int:
@@ -177,12 +212,12 @@ def run(binary: Path, manifest: Path, report_path: Path) -> int:
                 for case in cases:
                     for phase in case['phases']:
                         row = stock.observe(url, state, phase, 'raw', case['raw'])
-                        row.update(id=case['id'], assertion_passed=stock.rejected_without_leak(row))
+                        row.update(id=case['id'], assertion_passed=strict_rejection(row))
                         rows.append(row)
                 for phase in ('request', 'response'):
                     for fault in FAULTS:
                         row = stock.observe(url, state, phase, fault)
-                        row.update(id=fault, assertion_passed=stock.rejected_without_leak(row),
+                        row.update(id=fault, assertion_passed=strict_rejection(row),
                                    outcome_class='availability_fault')
                         fault_rows.append(row)
             finally:
@@ -192,7 +227,7 @@ def run(binary: Path, manifest: Path, report_path: Path) -> int:
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=5)
-    status = acceptance_status(controls, rows, fault_rows, sum(len(c['phases']) for c in cases))
+    status = acceptance_status(controls, rows, fault_rows, cases)
     report = {'kind': 'REAL_GATEWAY_PATCHED_WIRE_ACCEPTANCE', 'build': build,
         'config_sha256': hashlib.sha256(config).hexdigest(),
         'runner_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
