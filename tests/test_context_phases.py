@@ -53,13 +53,19 @@ class ContextPhases(unittest.TestCase):
             self.assertEqual(probe.context_status(rows), 'FAIL')
 
     def test_mapping_contract_change_is_rejected_before_running(self):
-        with patch.object(probe, 'EXPECTED_MAPPING_HEADERS', probe.EXPECTED_MAPPING_HEADERS[:-1]):
-            with self.assertRaisesRegex(ValueError, 'CONTEXT_MAPPING_CHANGED'):
-                probe.cases()
         dropped = {k: v for k, v in probe.HEADER_EXPRESSIONS.items() if k != 'x-ag-requested-model'}
         with patch.object(probe, 'HEADER_EXPRESSIONS', dropped):
             with self.assertRaisesRegex(ValueError, 'CONTEXT_MAPPING_CHANGED'):
                 probe.cases()
+        # Same header names, drifted expression: the suite must not adopt it.
+        for key, value in (('x-ag-effective-stream', '"false"'),
+                           ('x-ag-original-path', '"/v1/chat/completions"'),
+                           ('x-ag-requested-model', '"fixture"')):
+            with self.subTest(key=key):
+                drift = dict(probe.HEADER_EXPRESSIONS, **{key: value})
+                with patch.object(probe, 'HEADER_EXPRESSIONS', drift):
+                    with self.assertRaisesRegex(ValueError, 'CONTEXT_MAPPING_CHANGED'):
+                        probe.cases()
 
     def test_omitted_response_hook_never_passes_allowed_request(self):
         case = cases()[0]; row = observation(case)

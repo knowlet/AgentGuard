@@ -26,8 +26,16 @@ EXPECTED_CONTEXT = {'x-ag-original-path': '/v1/chat/completions',
 PHASES = ('request', 'response')
 CONTROL_CASE_IDS = ('valid', 'default_stream', 'spoofed_headers_overwritten',
                     'stream_true_spoofed_false', 'wrong_model_spoofed_fixture')
-EXPECTED_MAPPING_HEADERS = ('x-ag-original-path', 'x-ag-original-media-type',
-                            'x-ag-effective-stream', 'x-ag-requested-model')
+# Frozen copy of the trusted-header contract: header -> exact CEL expression.
+# The fixture configs are built from THIS mapping, and cases() fails closed when
+# the live contract differs, so a value-only drift cannot redefine the suite.
+EXPECTED_MAPPING = {
+    'x-ag-original-path': 'request.path',
+    'x-ag-original-media-type': 'request.headers["content-type"]',
+    'x-ag-effective-stream': '"stream" in json(request.body) ? (type(json(request.body).stream) == bool ? string(json(request.body).stream) : "invalid") : "false"',
+    'x-ag-requested-model': 'json(request.body).model',
+}
+EXPECTED_MAPPING_HEADERS = tuple(EXPECTED_MAPPING)
 MAPPING_FAILURES = ('missing', 'cel_error')
 MAPPING_CASES_PER_PHASE = len(EXPECTED_MAPPING_HEADERS) * len(MAPPING_FAILURES) * 2
 EXPECTED_CASE_COUNT = len(CONTROL_CASE_IDS) + len(PHASES) * MAPPING_CASES_PER_PHASE
@@ -45,7 +53,7 @@ def registered_ids() -> frozenset[str]:
 
 
 def cases():
-    if set(HEADER_EXPRESSIONS) != set(EXPECTED_MAPPING_HEADERS):
+    if HEADER_EXPRESSIONS != EXPECTED_MAPPING:
         raise ValueError('CONTEXT_MAPPING_CHANGED: review the header contract before changing the suite')
     result = [
         {'id': 'valid', 'stream': False, 'allow': True, 'reason': 'CONTEXT_ALLOW'},
@@ -164,7 +172,7 @@ def context_config(port: int, target: int, case: dict) -> dict:
     route['backends'][0]['ai']['provider']['openAI'] = {}
     hooks = route['policies']['ai']['promptGuard']
     for phase in ('request', 'response'):
-        mapping = dict(HEADER_EXPRESSIONS)
+        mapping = dict(EXPECTED_MAPPING)
         if case.get('mapping_phase') == phase:
             if case['mapping_failure'] == 'missing':
                 del mapping[case['header']]

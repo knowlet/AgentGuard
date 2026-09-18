@@ -71,9 +71,11 @@ Build 與 acceptance 分成不同 GitHub Actions jobs。Consumer 只下載 `need
 
 Context suite 的 gate 改為綁定 frozen identity registry（5 個 control，加 2 phases
 × 4 headers × 2 failure types × spoof/plain 共 32 個 mapping cases，總計 37 個），
-不再從當下的 `cases()` 推導預期 ID。縮短 `cases()` 或改動 `HEADER_EXPRESSIONS`
-會得到 `CONTEXT_SUITE_CHANGED`／`CONTEXT_MAPPING_CHANGED`，而不是 PASS；挑選
-案例的測試也明確指定 `mapping_failure=missing`，不依賴 `cases()` 的迭代順序。
+不再從當下的 `cases()` 推導預期 ID，fixture config 的 header 表達式也由 frozen
+mapping 產生。縮短 `cases()` 會得到 `CONTEXT_SUITE_CHANGED`；header 名稱或 CEL
+表達式值任一漂移（只改值、不改名）都會得到 `CONTEXT_MAPPING_CHANGED`，而不是
+PASS；挑選案例的測試也明確指定 `mapping_failure=missing`，不依賴 `cases()` 的
+迭代順序。
 
 Rollback 的失敗注入改用 `os.fstat(dst_dir_fd)` 的 dev/inode 與 `os.stat(target.parent)`
 比對目錄身分：`/proc/self/fd` 的 readlink 會回傳 kernel 正規化路徑，在 symlink

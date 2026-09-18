@@ -84,7 +84,7 @@ Earlier successful run IDs remain historical, not evidence for this new head.
 | Review concern | Canonical implementation and executable evidence |
 |---|---|
 | `assume-unchanged`/`skip-worktree` hides worktree edits from `git diff` and `git status` | The installer and the build gate reject any non-`H` index tag before reading or compiling; regressions first assert that `git status --porcelain` stays silent for the modified input, then assert both gates refuse and no binary is published. |
-| A suite that defines its own expected identities | `context_probe` gates on a frozen 37-identity registry derived from declared constants, not from `cases()`; shrinking the generator or the header contract raises `CONTEXT_SUITE_CHANGED`/`CONTEXT_MAPPING_CHANGED` instead of passing. |
+| A suite that defines its own expected identities | `context_probe` gates on a frozen 37-identity registry derived from declared constants, not from `cases()`, and builds its fixture mappings from that frozen header-to-CEL map. Shrinking the generator raises `CONTEXT_SUITE_CHANGED`; renaming a header or editing only its CEL value raises `CONTEXT_MAPPING_CHANGED` instead of passing. |
 | Test oracle that depends on `/proc` and a symlink-free path | The rollback failure injection compares directory identity by `os.fstat` dev/inode against `os.stat(target.parent)`, so it works under a symlinked TMPDIR and on non-Linux hosts while still failing if the injected error never fires. |
 
 The index-flag rejection covers the two documented stat-cache flags and fails closed on
