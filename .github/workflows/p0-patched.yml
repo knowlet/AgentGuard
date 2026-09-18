@@ -1,0 +1,164 @@
+name: p0-patched-wire
+on:
+  pull_request:
+    branches: [develop]
+  workflow_dispatch:
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+concurrency:
+  group: p0-patched-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      artifact_id: ${{ steps.binary-artifact.outputs.artifact-id }}
+      manifest_sha256: ${{ steps.reference.outputs.manifest_sha256 }}
+    env:
+      RUSTUP_TOOLCHAIN: '1.98.0'
+      CARGO_BUILD_JOBS: 2
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_INCREMENTAL: 0
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+    steps:
+      - name: Checkout exact event commit with ephemeral credentials
+        env:
+          REPOSITORY: ${{ github.repository }}
+          COMMIT: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          AUTH=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          echo "::add-mask::$AUTH"
+          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $AUTH" \
+          GIT_TERMINAL_PROMPT=0 git fetch --depth=1 origin "$COMMIT"
+          unset AUTH GH_TOKEN
+          git checkout --detach FETCH_HEAD
+      - name: Python contract tests
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+          python3 -m unittest discover -s tests -v 2>&1 | tee reports/python-tests.log
+          git rev-parse HEAD > reports/tested-commit.txt
+          git archive --format=zip HEAD -o reports/source.zip
+      - name: Fetch pinned upstream and apply exact-source patch
+        run: |
+          set -euo pipefail
+          git init "$RUNNER_TEMP/upstream"
+          git -C "$RUNNER_TEMP/upstream" remote add origin https://github.com/agentgateway/agentgateway.git
+          git -C "$RUNNER_TEMP/upstream" fetch --depth=1 origin fe6732474a96a0363dfb9822859af4e9bab360fa
+          git -C "$RUNNER_TEMP/upstream" checkout --detach FETCH_HEAD
+          python3 -m tools.apply_gateway_patch --source "$RUNNER_TEMP/upstream" --manifest reports/patch-manifest.json
+          git -C "$RUNNER_TEMP/upstream" add -N crates/agentgateway/src/llm/policy/agentguard_strict_wire.rs
+          git -C "$RUNNER_TEMP/upstream" diff > reports/agentgateway.patch
+          cp "$RUNNER_TEMP/upstream/Cargo.lock" reports/upstream-Cargo.lock
+          rustup toolchain install 1.98.0 --profile minimal
+      - name: Native Serde regression tests (not Gateway E2E)
+        run: |
+          set -euo pipefail
+          python3 -m tools.prepare_wire_harness --source "$RUNNER_TEMP/upstream" --output "$RUNNER_TEMP/wire-harness"
+          RUSTUP_TOOLCHAIN=1.98.0 cargo test --manifest-path "$RUNNER_TEMP/wire-harness/Cargo.toml" 2>&1 | tee reports/serde-tests.log
+          cp "$RUNNER_TEMP/wire-harness/Cargo.lock" reports/serde-Cargo.lock
+      - name: Compile patched Gateway with verified toolchain and features
+        run: |
+          set -euo pipefail
+          python3 -m tools.build_gateway --source "$RUNNER_TEMP/upstream" --manifest reports/patch-manifest.json --binary reports/patched-bin/agentgateway 2>&1 | tee reports/build.log
+      - name: Publish build reference through GitHub job outputs
+        id: reference
+        run: |
+          set -euo pipefail
+          printf 'manifest_sha256=%s\n' "$(sha256sum reports/patch-manifest.json | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: Upload immutable build inputs for a separate consumer job
+        id: binary-artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: patched-build-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            reports/patch-manifest.json
+            reports/patched-bin/agentgateway
+          if-no-files-found: error
+          retention-days: 7
+      - name: Preserve source and build evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: build-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            reports/*.json
+            reports/*.log
+            reports/*.lock
+            reports/*.txt
+            reports/*.patch
+            reports/source.zip
+          if-no-files-found: error
+          retention-days: 30
+  accept:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      BUILD_MANIFEST_SHA256: ${{ needs.build.outputs.manifest_sha256 }}
+      COMPOSE_PROJECT_NAME: agentguard-patched-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout exact event commit with ephemeral credentials
+        env:
+          REPOSITORY: ${{ github.repository }}
+          COMMIT: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          AUTH=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          echo "::add-mask::$AUTH"
+          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $AUTH" \
+          GIT_TERMINAL_PROMPT=0 git fetch --depth=1 origin "$COMMIT"
+          unset AUTH GH_TOKEN
+          git checkout --detach FETCH_HEAD
+      - name: Fetch only the artifact ID produced by this run's build job
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          path: reports
+          merge-multiple: true
+      - name: Real patched Gateway wire and context acceptance
+        run: |
+          set -euo pipefail
+          python3 -m tools.gateway_acceptance --gateway-bin reports/patched-bin/agentgateway --build-manifest reports/patch-manifest.json --report reports/gateway-patched.json
+          python3 -m tools.context_probe --gateway-bin reports/patched-bin/agentgateway --build-manifest reports/patch-manifest.json --report reports/context.json
+      - name: Real patched Gateway and context in isolated Compose
+        run: |
+          set -euo pipefail
+          docker compose -f deploy/compose/compose.patched.yaml config --quiet
+          docker compose -f deploy/compose/compose.patched.yaml run --build --rm patched-wire
+          docker compose -f deploy/compose/compose.patched.yaml run --rm --entrypoint python patched-wire -m tools.context_probe --gateway-bin /usr/local/bin/agentgateway --build-manifest /app/build-manifest.json --report /evidence/context.json
+          docker compose -f deploy/compose/compose.patched.yaml run --rm --entrypoint python patched-wire -c 'import json; from pathlib import Path; assert json.loads(Path("/evidence/gateway-patched.json").read_text())["protected_wire_gate"]=="PASS"; assert json.loads(Path("/evidence/context.json").read_text())["context_slice_gate"]=="PASS"; assert Path("/evidence/gateway-patched.gateway.log").stat().st_size>0; print("persisted evidence verified")'
+      - name: Collect Compose evidence and remove only this job's resources
+        if: always()
+        run: |
+          set -euo pipefail
+          if docker volume inspect "${COMPOSE_PROJECT_NAME}_patched-evidence" >/dev/null 2>&1; then
+            mkdir -p reports/compose
+            docker compose -f deploy/compose/compose.patched.yaml run --rm --entrypoint python patched-wire -c 'import sys,tarfile; t=tarfile.open(fileobj=sys.stdout.buffer, mode="w|"); t.add("/evidence",arcname="."); t.close()' > reports/compose.tar
+            tar -xf reports/compose.tar -C reports/compose
+          fi
+          docker compose -f deploy/compose/compose.patched.yaml down --volumes
+      - name: Upload raw acceptance evidence, not release attestations
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: patched-wire-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            reports/*.json
+            reports/*.log
+            reports/compose/
+          if-no-files-found: error
+          retention-days: 30

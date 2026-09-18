@@ -1,0 +1,22 @@
+services:
+  patched-wire:
+    environment:
+      BUILD_MANIFEST_SHA256: ${BUILD_MANIFEST_SHA256:?must come from the approved build job output}
+    platform: linux/amd64
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile.patched
+    network_mode: none
+    read_only: true
+    user: '65532:65532'
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 1g
+    cpus: 2
+    tmpfs:
+      - /tmp:rw,exec,nosuid,nodev,size=768m,mode=1777
+    volumes:
+      - patched-evidence:/evidence
+volumes:
+  patched-evidence:
