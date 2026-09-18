@@ -1,0 +1,60 @@
+# Proposed AgentGuard schema, NOT native AgentGateway configuration.
+# No full policy compiler/runtime is supplied by this documentation change.
+apiVersion: agentguard.dev/v1alpha1
+kind: PolicyBundle
+metadata:
+  name: strict-local
+  revision: draft-1
+spec:
+  mode: enforce
+  identity:
+    requireVerifiedSubject: true
+    tenantSource: verified_claim
+  deploymentRequirements:
+    compatibilityEvidenceRef: null # Missing evidence MUST reject activation.
+    webhookActionBoundary: strict_verified
+    requiredTrustedContext: [original_path, original_media_type, effective_stream, requested_model]
+    fieldCoverageOracle:
+      mode: external_digest_bound
+      bindTo: [gateway_image, gateway_config, compiler, adapter]
+      requireArtifactSha256: true
+      requireTrustedProvenance: true
+      rejectMissing: true
+      rejectExpired: true
+      rejectFutureDated: true
+      rejectDigestMismatch: true
+    rejectUnknownFieldsBeforeNormalization: true
+    onMissingEvidence: reject_activation
+    webhookBudgetMs: 8000 # Proposed, not measured.
+    transportReserveMs: 500
+    safetyMarginMs: 1000
+  llm:
+    allowedEndpoints: [/v1/chat/completions]
+    allowedContentTypes: [application/json]
+    streaming: deny
+    incompleteCoverage: deny
+  mcp:
+    defaultAction: deny
+    authorizeEveryCall: true
+    requireBackendQualifiedTool: true
+    allowRequestIdentityMutation: false
+    errorResponseProtection: required
+    errorResponseMode: error_sanitized
+    allowBackendAttestationAsProtection: false
+  detectors:
+    - id: presidio-local
+      purpose: pii
+      required: true
+      action: mask
+    - id: deterministic-secrets
+      purpose: secrets
+      required: true
+      action: deny
+  failures:
+    requiredDetector: deny
+    missingTrustedContext: deny
+    invalidMutation: deny
+    unknownCapability: deny
+    auditAppend: deny
+  audit:
+    payloadMode: metadata_only

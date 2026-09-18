@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "evidence_status": "SOURCE_DERIVED_NOT_RUNTIME_VERIFIED",
+  "notes": "Source expectations are not observed Gateway results. Raw strings preserve duplicate keys. Run only the listed phases; wrong-direction mask bodies are not universally invalid. Python helper supports allow/reject only, not masking or Gateway E2E.",
+  "cases": [
+    {"id":"empty_action","raw":"{\"action\":{}}","stock_source_expectation":"pass","phases":["request","response"],"canonical_expected":"reject_noncanonical","required_gate":"G0-WIRE"},
+    {"id":"typo_status","raw":"{\"action\":{\"status\":403,\"body\":\"x\"}}","stock_source_expectation":"pass","phases":["request","response"],"canonical_expected":"reject_noncanonical","required_gate":"G0-WIRE"},
+    {"id":"string_status","raw":"{\"action\":{\"status_code\":\"403\",\"body\":\"x\"}}","stock_source_expectation":"pass","phases":["request","response"],"canonical_expected":"reject_noncanonical","required_gate":"G0-WIRE"},
+    {"id":"invalid_mask_body","raw":"{\"action\":{\"body\":{}}}","stock_source_expectation":"pass","phases":["request","response"],"canonical_expected":"reject_noncanonical","required_gate":"G0-WIRE"},
+    {"id":"missing_body","raw":"{\"action\":{\"status_code\":403}}","stock_source_expectation":"pass","phases":["request","response"],"canonical_expected":"reject_noncanonical","required_gate":"G0-WIRE"},
+    {"id":"missing_status","raw":"{\"action\":{\"body\":\"x\"}}","stock_source_expectation":"pass","phases":["request","response"],"canonical_expected":"reject_noncanonical","required_gate":"G0-WIRE"},
+    {"id":"unknown_action_key","raw":"{\"action\":{\"reason\":\"POLICY_ALLOW\",\"typo\":true}}","stock_source_expectation":"pass","phases":["request","response"],"canonical_expected":"reject_noncanonical","required_gate":"G0-WIRE"},
+    {"id":"unknown_envelope_key","raw":"{\"action\":{\"reason\":\"POLICY_ALLOW\"},\"typo\":true}","stock_source_expectation":"pass","phases":["request","response"],"canonical_expected":"reject_noncanonical","required_gate":"G0-WIRE"},
+    {"id":"bad_reason_type","raw":"{\"action\":{\"reason\":123}}","stock_source_expectation":"parse_error","phases":["request","response"],"canonical_expected":"reject_noncanonical","required_gate":"G0-WIRE"},
+    {"id":"null_action","raw":"{\"action\":null}","stock_source_expectation":"parse_error","phases":["request","response"],"canonical_expected":"reject_noncanonical","required_gate":"G0-WIRE"},
+    {"id":"missing_action","raw":"{}","stock_source_expectation":"parse_error","phases":["request","response"],"canonical_expected":"reject_noncanonical","required_gate":"G0-WIRE"},
+    {"id":"null_reason","raw":"{\"action\":{\"reason\":null}}","stock_source_expectation":"pass","phases":["request","response"],"canonical_expected":"reject_noncanonical","required_gate":"G0-WIRE"},
+    {"id":"empty_reason","raw":"{\"action\":{\"reason\":\"\"}}","stock_source_expectation":"pass","phases":["request","response"],"canonical_expected":"reject_noncanonical","required_gate":"G0-WIRE"},
+    {"id":"boolean_status","raw":"{\"action\":{\"status_code\":true,\"body\":\"x\"}}","stock_source_expectation":"pass","phases":["request","response"],"canonical_expected":"reject_noncanonical","required_gate":"G0-WIRE"},
+    {"id":"out_of_range_u16","raw":"{\"action\":{\"status_code\":70000,\"body\":\"x\"}}","stock_source_expectation":"pass","phases":["request","response"],"canonical_expected":"reject_noncanonical","required_gate":"G0-WIRE"},
+    {"id":"success_status_reject","raw":"{\"action\":{\"status_code\":200,\"body\":\"x\",\"reason\":\"DENY\"}}","stock_source_expectation":"reject_variant_not_http_assertion","phases":["request","response"],"canonical_expected":"reject_noncanonical","required_gate":"G0-WIRE"},
+    {"id":"mixed_mask_reject","raw":"{\"action\":{\"body\":{\"messages\":[]},\"status_code\":403,\"reason\":\"DENY\"}}","stock_source_expectation":"mask","phases":["request","response"],"canonical_expected":"reject_noncanonical","required_gate":"G0-WIRE"},
+    {"id":"wrong_phase_choices","raw":"{\"action\":{\"body\":{\"choices\":[]},\"reason\":\"MASK\"}}","stock_source_expectation":"mask_phase_handling_not_verified","phases":["request"],"canonical_expected":"reject_noncanonical","required_gate":"G0-WIRE"},
+    {"id":"duplicate_reason","raw":"{\"action\":{\"reason\":\"A\",\"reason\":\"B\"}}","stock_source_expectation":"not_verified","phases":["request","response"],"canonical_expected":"reject_noncanonical","required_gate":"G0-WIRE"},
+    {"id":"extra_on_reject","raw":"{\"action\":{\"status_code\":403,\"body\":\"x\",\"reason\":\"DENY\",\"extra\":1}}","stock_source_expectation":"reject","phases":["request","response"],"canonical_expected":"reject_noncanonical","required_gate":"G0-WIRE"},
+    {"id":"nan_status","raw":"{\"action\":{\"status_code\":NaN,\"body\":\"x\"}}","stock_source_expectation":"parse_error","phases":["request","response"],"canonical_expected":"reject_noncanonical","required_gate":"G0-WIRE"},
+    {"id":"wrong_phase_messages","raw":"{\"action\":{\"body\":{\"messages\":[]},\"reason\":\"MASK\"}}","stock_source_expectation":"mask_phase_handling_not_verified","phases":["response"],"canonical_expected":"reject_noncanonical","required_gate":"G0-WIRE"}
+  ]
+}
