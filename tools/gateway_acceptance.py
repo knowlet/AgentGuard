@@ -15,6 +15,9 @@ import socket
 import subprocess
 import tempfile
 import threading
+import time
+import re
+from tools.process_identity import wait_listener, require_listener
 
 from tools import gateway_probe as stock
 from tools.apply_gateway_patch import UPSTREAM_REVISION, WEBHOOK_BLOB
@@ -45,7 +48,8 @@ EXTRA_ENVELOPES = (
     '{"action":{"reason":"ALLOW"}} {}',
     '{"action":{"reason":"' + 'x' * 513 + '"}}',
 )
-FAULTS = ('http_error', 'non_json', 'disconnect', 'truncated')
+FAULTS = ('http_error', 'non_json', 'disconnect', 'truncated', 'timeout')
+EXPECTED_NEGATIVE_PHASES = 84
 
 
 def unique_object(pairs):
@@ -59,6 +63,9 @@ def unique_object(pairs):
 
 def verify_build(binary: Path, manifest: Path) -> tuple[bytes, dict]:
     raw = manifest.read_bytes()
+    expected_hash = os.environ.get('BUILD_MANIFEST_SHA256', '')
+    if not re.fullmatch(r'[0-9a-f]{64}', expected_hash) or hashlib.sha256(raw).hexdigest() != expected_hash:
+        raise ValueError('BUILD_REFERENCE_MISSING_OR_MISMATCH')
     if len(raw) > 65536:
         raise ValueError('build manifest too large')
     info = json.loads(raw, object_pairs_hook=unique_object)
@@ -68,6 +75,9 @@ def verify_build(binary: Path, manifest: Path) -> tuple[bytes, dict]:
         'decoder_sha256': hashlib.sha256((ROOT / 'patches/agentgateway-v1.5.0/strict_wire.rs').read_bytes()).hexdigest(),
         'installer_sha256': hashlib.sha256((ROOT / 'tools/apply_gateway_patch.py').read_bytes()).hexdigest(),
         'wire_profile': 'normalized-text-v1',
+        'suite': suite_binding(),
+        'toolchain': '1.98',
+        'build_features': ['jemalloc', 'mimalloc', 'crypto-aws-lc'],
     }
     if not isinstance(info, dict) or any(info.get(k) != v for k, v in expected.items()):
         raise ValueError('build provenance does not match this source checkout')
@@ -97,6 +107,11 @@ def fixtures():
             if not 0 < length <= stock.LIMIT:
                 return self.send_error(400)
             self.rfile.read(length)
+            if fault == 'timeout':
+                # Stock Gateway's 10-second webhook timeout must expire before this returns.
+                time.sleep(11)
+                self.close_connection = True
+                return
             if fault == 'disconnect':
                 self.close_connection = True
                 self.connection.shutdown(socket.SHUT_RDWR)
@@ -130,26 +145,84 @@ def negative_cases() -> list[dict]:
     cases = [dict(c) for c in cases]
     for i, raw in enumerate(['{"action":' + a + '}' for a in EXTRA_ACTIONS] + list(EXTRA_ENVELOPES)):
         cases.append({'id': f'strict_{i}', 'raw': raw, 'phases': ['request', 'response']})
-    # The expected behavior is independent of old stock_source_expectation.
+    identities = [(c['id'], phase) for c in cases for phase in c['phases']]
+    if len(identities) != EXPECTED_NEGATIVE_PHASES or len(set(identities)) != EXPECTED_NEGATIVE_PHASES:
+        raise ValueError('NEGATIVE_SUITE_CHANGED: review the registered suite before changing its size')
     return cases
 
 
-def strict_rejection(row: dict) -> bool:
+def suite_binding() -> dict:
+    cases = negative_cases()
+    files = ('tools/gateway_acceptance.py', 'tools/gateway_probe.py',
+             'tools/process_identity.py', 'tools/context_probe.py', 'agentguard/context.py',
+             'tests/fixtures/webhook-negative.json')
+    return {'phase_cases': EXPECTED_NEGATIVE_PHASES,
+            'cases_sha256': hashlib.sha256(json.dumps(cases, sort_keys=True).encode()).hexdigest(),
+            'files': {f: hashlib.sha256((ROOT / f).read_bytes()).hexdigest() for f in files}}
+
+
+def transport_rejection(row: dict) -> bool:
     try:
         phase = row['phase']
-        if phase not in ('request', 'response'):
+        if phase not in ('request', 'response') or row.get('process_listener_owned') is not True:
             return False
         expected = {'request': 1, 'response': 0 if phase == 'request' else 1,
                     'upstream': 0 if phase == 'request' else 1}
-        return row['counts'] == expected and stock.rejected_without_leak(row)
-    except (KeyError, TypeError):
+        return (type(row['http_status']) is int and 400 <= row['http_status'] <= 599
+                and row['client_marker_visible'] is False and row['counts'] == expected
+                and all(type(v) is int for v in row['counts'].values()))
+    except (KeyError, TypeError, AttributeError):
         return False
+
+
+def strict_rejection(row: dict) -> bool:
+    return (transport_rejection(row) and row['http_status'] == 503
+            and row.get('gateway_error_code') == 'AG_WIRE_INVALID_RESPONSE')
+
+
+def fault_rejection(row: dict) -> bool:
+    if not transport_rejection(row):
+        return False
+    if row['id'] == 'http_error':
+        return row.get('gateway_error_code') == 'AG_WIRE_HTTP_STATUS'
+    if row['id'] in ('non_json', 'truncated'):
+        return row.get('gateway_error_code') == 'AG_WIRE_INVALID_RESPONSE'
+    if row['id'] == 'timeout':
+        elapsed = row.get('elapsed_ms')
+        return type(elapsed) in (float, int) and 9000 <= elapsed <= 14000
+    return row['id'] == 'disconnect'
+
+
+def observed_call(process, exe, port, log_path, url, state, phase, action, raw=''):
+    require_listener(process, exe, port)
+    offset = log_path.stat().st_size
+    row = stock.observe(url, state, phase, action, raw)
+    require_listener(process, exe, port)
+    code = None
+    end = time.monotonic() + 1
+    while True:
+        with log_path.open('rb') as log:
+            log.seek(offset)
+            fragment = log.read(stock.LIMIT)
+        matches = re.findall(rb'\bAG_WIRE_(?:INVALID_RESPONSE|HTTP_STATUS)\b', fragment)
+        if matches:
+            code = matches[-1].decode()
+        if code or action not in ('raw', 'non_json', 'truncated', 'http_error') or time.monotonic() >= end:
+            break
+        time.sleep(.01)
+    row.update(process_listener_owned=True, gateway_error_code=code,
+               gateway_log_offset=offset, gateway_log_bytes=len(fragment),
+               gateway_log_sha256=hashlib.sha256(fragment).hexdigest())
+    return row
 
 
 def acceptance_status(controls: list, rows: list, faults: list, cases: list | None = None) -> str:
     """Require exact case identity and recompute assertions from observations, not flags."""
+    registered = negative_cases()
     if cases is None:
-        cases = negative_cases()
+        cases = registered
+    if cases != registered:
+        return 'FAIL' 
     expected_rows = {(c['id'], phase) for c in cases for phase in c['phases']}
     expected_controls = {(phase + '_' + action, phase) for phase in ('request', 'response')
                          for action in ('allow', 'deny', 'mask')}
@@ -160,15 +233,21 @@ def acceptance_status(controls: list, rows: list, faults: list, cases: list | No
         try:
             if {(r['id'], r['phase']) for r in group} != expected:
                 return 'FAIL'
-            if not all(r.get('assertion_passed') is True for r in group):
+            if not all(r.get('assertion_passed') is True and r.get('process_listener_owned') is True for r in group):
                 return 'FAIL'
         except (KeyError, TypeError, AttributeError):
             return 'FAIL'
     try:
         if not all(stock.control_passes(r, r['id'].split('_', 1)[1]) for r in controls):
             return 'FAIL'
-        if not all(strict_rejection(r) for r in rows + faults):
+        if not all(strict_rejection(r) for r in rows) or not all(fault_rejection(r) for r in faults):
             return 'FAIL'
+        for fault in faults:
+            recovery = fault.get('recovery')
+            if not isinstance(recovery, dict) or recovery.get('phase') != fault['phase']:
+                return 'FAIL'
+            if recovery.get('process_listener_owned') is not True or not stock.control_passes(recovery, 'allow'):
+                return 'FAIL'
     except (KeyError, TypeError):
         return 'FAIL'
     return 'PASS'
@@ -196,34 +275,24 @@ def run(binary: Path, manifest: Path, report_path: Path) -> int:
                 stdout=log, stderr=subprocess.STDOUT,
                 env={'PATH': os.environ.get('PATH', ''), 'HOME': directory, 'RUST_LOG': 'info'})
             try:
-                import time
-                deadline = time.monotonic() + 30
-                while True:
-                    if process.poll() is not None:
-                        raise RuntimeError('patched Gateway exited before readiness')
-                    try:
-                        with socket.create_connection(('127.0.0.1', port), timeout=.2):
-                            break
-                    except OSError:
-                        if time.monotonic() > deadline:
-                            raise RuntimeError('patched Gateway readiness timeout')
-                        time.sleep(.1)
+                wait_listener(process, exe, port)
                 url = f'http://127.0.0.1:{port}/v1/chat/completions'
                 for phase in ('request', 'response'):
                     for action in ('allow', 'deny', 'mask'):
-                        row = stock.observe(url, state, phase, action)
+                        row = observed_call(process, exe, port, log_path, url, state, phase, action)
                         row.update(id=phase + '_' + action, assertion_passed=stock.control_passes(row, action))
                         controls.append(row)
                 for case in cases:
                     for phase in case['phases']:
-                        row = stock.observe(url, state, phase, 'raw', case['raw'])
+                        row = observed_call(process, exe, port, log_path, url, state, phase, 'raw', case['raw'])
                         row.update(id=case['id'], assertion_passed=strict_rejection(row))
                         rows.append(row)
                 for phase in ('request', 'response'):
                     for fault in FAULTS:
-                        row = stock.observe(url, state, phase, fault)
-                        row.update(id=fault, assertion_passed=strict_rejection(row),
-                                   outcome_class='availability_fault')
+                        row = observed_call(process, exe, port, log_path, url, state, phase, fault)
+                        row.update(id=fault, outcome_class='availability_fault')
+                        row['assertion_passed'] = fault_rejection(row)
+                        row['recovery'] = observed_call(process, exe, port, log_path, url, state, phase, 'allow')
                         fault_rows.append(row)
             finally:
                 process.terminate()
@@ -241,7 +310,10 @@ def run(binary: Path, manifest: Path, report_path: Path) -> int:
         'controls': controls, 'negative_cases': rows, 'fault_cases': fault_rows,
         'protected_wire_gate': status, 'scope': 'normalized-text-v1 webhook wire only',
         'p0_release_gate': 'NOT_EVALUATED', 'asr_fpr': 'NOT_EVALUATED',
-        'provenance_authentication': 'TRUSTED_CI_INPUT_NOT_SIGNED',
+        'build_reference_sha256': os.environ['BUILD_MANIFEST_SHA256'],
+        'provenance_authentication': 'SAME_RUN_INTEGRITY_NOT_RELEASE_ATTESTATION',
+        'deployment_approved': False,
+        'gates': {g: 'NOT_EVALUATED' for g in ('G0-CONTEXT', 'G0-COVERAGE', 'G0-DEADLINE')},
         'limitations': ['no original-request coverage evidence', 'no deployment activation',
                         'no complete deadline/load suite', 'no MCP enforcement claim']}
     report_path.write_text(json.dumps(report, indent=2) + '\n')
@@ -261,7 +333,7 @@ def main() -> int:
     except (OSError, ValueError, RuntimeError) as exc:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(json.dumps({'kind': 'REAL_GATEWAY_PATCHED_WIRE_ACCEPTANCE',
-            'protected_wire_gate': 'ERROR', 'p0_release_gate': 'NOT_EVALUATED', 'error': str(exc)}) + '\n')
+            'protected_wire_gate': 'ERROR', 'p0_release_gate': 'NOT_EVALUATED', 'asr_fpr': 'NOT_EVALUATED', 'error': str(exc)}) + '\n')
         print(f'ERROR: {exc}')
         return 2
 

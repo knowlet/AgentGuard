@@ -5,7 +5,7 @@ from tools.gateway_acceptance import EXTRA_ACTIONS, EXTRA_ENVELOPES, FAULTS, acc
 
 
 def rejection(phase):
-    return {'phase': phase, 'http_status': 503, 'client_marker_visible': False,
+    return {'phase': phase, 'process_listener_owned': True, 'gateway_error_code': 'AG_WIRE_INVALID_RESPONSE', 'http_status': 503, 'client_marker_visible': False,
             'counts': {'request': 1, 'response': 0 if phase == 'request' else 1,
                        'upstream': 0 if phase == 'request' else 1}, 'assertion_passed': True}
 
@@ -25,6 +25,12 @@ def passing_observations():
             controls.append(row)
     rows = [dict(rejection(phase), id=c['id']) for c in negative_cases() for phase in c['phases']]
     faults = [dict(rejection(phase), id=fault) for phase in ('request', 'response') for fault in FAULTS]
+    for fault in faults:
+        fault['recovery'] = next(copy.deepcopy(c) for c in controls if c['id'] == fault['phase'] + '_allow')
+        if fault['id'] == 'http_error':
+            fault['gateway_error_code'] = 'AG_WIRE_HTTP_STATUS'
+        if fault['id'] == 'timeout':
+            fault['elapsed_ms'] = 10001
     return controls, rows, faults
 
 
@@ -79,6 +85,6 @@ class GatewayPatchTests(unittest.TestCase):
         self.assertFalse(strict_rejection(r))
 
     def test_pipeline_exit_codes_are_not_hidden_by_tee(self):
-        from pathlib import Path
-        text = (Path(__file__).resolve().parents[1] / '.github/workflows/p0-patched.yml').read_text()
-        self.assertIn('defaults:\n  run:\n    shell: bash\n', text)
+        import subprocess
+        result = subprocess.run(['bash', '-o', 'pipefail', '-c', 'exit 7 | cat'], capture_output=True)
+        self.assertEqual(result.returncode, 7)

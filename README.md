@@ -10,7 +10,7 @@ AgentGuard 是以 **AgentGateway 作為 enforcement plane** 的 protocol-aware a
 |---|---|---|
 | Stock diagnostic | checksum-pinned 真實 AgentGateway、HTTP fixtures、upstream counters、mask 結構檢查、CPU Compose | 診斷綠燈只代表 VULNERABILITY_REPRODUCED，不是 protected PASS |
 | Strict wire patch | 在 Gateway 內驗證唯一 action、物件形狀、欄位與型別、phase、reject status、HTTP 故障；exact-source installer | 不是上游官方 release 修復，也不是另一個 reverse proxy |
-| Patched acceptance | 6 個合法 controls、84 個負向 phase cases、8 個 transport faults；Serde、native Gateway、Compose 分層驗證 | 不涵蓋原始 request field coverage、所有 timeout/load、MCP 或 detector 效果 |
+| Patched acceptance | 6 個合法 controls、84 個負向 phase cases、10 個 transport faults 與 10 次 recovery；Serde、native Gateway、Compose 分層驗證 | 不涵蓋原始 request field coverage、所有 timeout/load、MCP 或 detector 效果 |
 | Evidence preflight | artifact hash、Gateway/config/compiler/adapter digests、scope、freshness、必要 context/coverage/gates | 不是完整 policy compiler、簽章驗證服務或 route activation |
 | 統計與結果契約 | Wilson CI、固定樣本規劃、獨立 availability-fault 記帳與回歸測試 | 不是已執行的模型 benchmark 或完整 joint release evaluator |
 
@@ -64,3 +64,11 @@ Detector 提供 evidence，不能授權；tools/list 隱藏不能替代 tools/ca
 2026-09-17 的 review-verification、sources 與規劃文件保留當時的驗證快照；其中的 NOT_RUN 描述不應覆蓋後續 CI 的實際結果，也不能反過來把新版本的測試追溯套用舊版本。
 
 專案 LICENSE 未變更。第三方程式碼、模型與資料分別審查授權；本階段未加入第三方模型權重或資料集原文。
+
+## Review 整併與下一個 P0 切片
+
+PR #7 與 #8 原為重複實作；#7 已由 #8 取代，保留 #8 作為唯一整併入口。修正與 scope 見 [review consolidation](docs/review-consolidation.md)。
+
+新增 `agentguard.context` 的封閉 CEL mapping／route preflight，與 `tools.context_probe` 真實 Gateway 測試：缺 header、CEL 求值失敗、client 偽造 context、streaming 與模型拒絕。Provider model override 會改變 `llmRequest.model`，此原始模型 profile 明確拒絕該配置，不將有效模型誤稱客戶端原始模型。這仍不是完整 Studio/compiler/identity/ingress coverage。
+
+Patched build 與 acceptance 現在分為不同 CI jobs。手動驗收必須從受信 build job 取得 `BUILD_MANIFEST_SHA256`；不要對任意下載的 manifest 自行計算 hash 後當作受信來源。Compose 也要求此值。完整 build 流程以 `.github/workflows/p0-patched.yml` 為準；PR run 不產生 production approval。

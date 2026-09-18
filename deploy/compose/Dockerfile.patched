@@ -3,6 +3,7 @@ FROM python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /app
 COPY tools/ tools/
+COPY agentguard/ agentguard/
 COPY patches/ patches/
 COPY tests/fixtures/ tests/fixtures/
 COPY reports/patch-manifest.json /app/build-manifest.json

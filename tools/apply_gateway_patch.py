@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+from tools.atomic_files import write_set
 
 ROOT = Path(__file__).resolve().parents[1]
 UPSTREAM_REVISION = 'fe6732474a96a0363dfb9822859af4e9bab360fa'
@@ -80,6 +81,10 @@ impl<'de> Deserialize<'de> for ENVELOPE {
 
 
 def apply(source: Path, manifest: Path) -> dict:
+    source = source.resolve()
+    root = subprocess.check_output(['git', '-C', str(source), 'rev-parse', '--show-toplevel'], text=True).strip()
+    if Path(root).resolve() != source:
+        raise ValueError('UPSTREAM_ROOT_MISMATCH')
     revision = subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()
     if revision != UPSTREAM_REVISION:
         raise ValueError('UPSTREAM_REVISION_MISMATCH')
@@ -92,19 +97,18 @@ def apply(source: Path, manifest: Path) -> dict:
     output = patched_source(raw)
     decoder = (ROOT / 'patches/agentgateway-v1.5.0/strict_wire.rs').read_bytes()
     destination = target.with_name('agentguard_strict_wire.rs')
+    if manifest.resolve() in {target.resolve(), destination.resolve()}:
+        raise ValueError('PATCH_OUTPUT_ALIAS')
     if destination.exists():
         raise ValueError('decoder destination already exists')
-    # All validations precede writes. Only this disposable upstream checkout is modified.
-    destination.write_bytes(decoder)
-    target.write_bytes(output)
     report = {'kind': 'agentguard-gateway-patch/v1', 'source_revision': revision,
               'upstream_webhook_git_blob': git_blob(raw),
               'patched_webhook_sha256': hashlib.sha256(output).hexdigest(),
               'decoder_sha256': hashlib.sha256(decoder).hexdigest(),
               'installer_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
               'wire_profile': 'normalized-text-v1', 'protected_gate': 'NOT_EVALUATED'}
-    manifest.parent.mkdir(parents=True, exist_ok=True)
-    manifest.write_text(json.dumps(report, indent=2) + '\n')
+    write_set({destination: decoder, target: output,
+               manifest: (json.dumps(report, indent=2) + '\n').encode()})
     return report
 
 

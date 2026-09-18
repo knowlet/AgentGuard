@@ -1,5 +1,7 @@
 services:
   patched-wire:
+    environment:
+      BUILD_MANIFEST_SHA256: ${BUILD_MANIFEST_SHA256:?must come from the approved build job output}
     platform: linux/amd64
     build:
       context: ../..
