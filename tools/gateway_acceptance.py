@@ -158,6 +158,7 @@ def suite_binding() -> dict:
     files = ('tools/build_gateway.py', 'tools/atomic_files.py',
              'tools/gateway_acceptance.py', 'tools/gateway_probe.py',
              'tools/process_identity.py', 'tools/context_probe.py', 'agentguard/context.py',
+             'tools/deadline_probe.py', 'agentguard/deadline.py',
              'tests/fixtures/webhook-negative.json')
     return {'phase_cases': EXPECTED_NEGATIVE_PHASES,
             'cases_sha256': hashlib.sha256(json.dumps(cases, sort_keys=True).encode()).hexdigest(),

@@ -2,7 +2,7 @@
 
 AgentGuard 是以 **AgentGateway 作為 enforcement plane** 的 protocol-aware agent security stack。
 
-> 狀態：P0 實作中，尚無 production-ready Guard stack。已有真實 Gateway／Compose 診斷、evidence preflight，以及固定 v1.5.0 的下游 strict webhook parser patch。**原版 v1.5.0 仍有已重現的 fail-open；下游 patch 的 scoped wire 驗收不等於完整 P0、PII 或 prompt-injection 防護。** 實際結果須查看對應 commit 的 CI 與 raw artifacts。
+> 狀態：P0 實作中，尚無 production-ready Guard stack。已有真實 Gateway／Compose 診斷、evidence preflight、固定 v1.5.0 的下游 strict webhook parser patch，以及 guard-deadline 預算的宣告閘門與 Gateway timeout 邊界切片。**原版 v1.5.0 仍有已重現的 fail-open；下游 patch 的 scoped wire 驗收不等於完整 P0、PII 或 prompt-injection 防護。** 實際結果須查看對應 commit 的 CI 與 raw artifacts。
 
 ## 目前實作與能力邊界
 
@@ -12,6 +12,7 @@ AgentGuard 是以 **AgentGateway 作為 enforcement plane** 的 protocol-aware a
 | Strict wire patch | 在 Gateway 內驗證唯一 action、物件形狀、欄位與型別、phase、reject status、HTTP 故障；exact-source installer | 不是上游官方 release 修復，也不是另一個 reverse proxy |
 | Patched acceptance | 6 個合法 controls、84 個負向 phase cases、10 個 transport faults 與 10 次 recovery；Serde、native Gateway、Compose 分層驗證 | 不涵蓋原始 request field coverage、所有 timeout/load、MCP 或 detector 效果 |
 | 雙向 context | 原始 request snapshot 的 CEL mapping、37 組 request/response 案例、每階段決策與 payload 保存驗證 | 不是 authentication、任意欄位 coverage 或 route activation |
+| Guard deadline | 宣告閘門（stage／reserve／margin 需小於 10 秒有效 Gateway timeout）、8 組真實 Gateway below／at／above budget 案例、guard 決策送達與 Gateway timeout 分開記帳 | 不是 latency SLO、detector 延遲、queue／backpressure／cancel，也不是完整 G0-DEADLINE |
 | Evidence preflight | artifact hash、Gateway/config/compiler/adapter digests、scope、freshness、必要 context/coverage/gates | 不是完整 policy compiler、簽章驗證服務或 route activation |
 | 統計與結果契約 | Wilson CI、固定樣本規劃、獨立 availability-fault 記帳與回歸測試 | 不是已執行的模型 benchmark 或完整 joint release evaluator |
 
@@ -45,7 +46,7 @@ ASR / FPR:            NOT_EVALUATED
 
 PromptGuard 將保護 LLM request/response、PII、secret 與 deterministic decisions；MCPGuard 將透過 ExtMCP 執行 method/tool authorization、tools/list mutation。Assurance 是隔離測試平面；Policy Studio 為 FastAPI control plane＋browser，負責 catalog、表單、驗證、模擬與版本發布。Observability 規劃使用 Prometheus、Loki、Grafana provisioning、Alloy；Guard JSONL 與 Gateway OTLP access logs 分流。這些完整服務、detectors 與 UI 尚未交付。
 
-P0 下一步是 G0-CONTEXT／COVERAGE／DEADLINE：可信身分及 CEL context、normalize 前封閉原始 schema、外部 per-digest field matrix、包含 queue/audit 的 deadline 故障測試。缺 evidence 的 strict policy 不可 activate。P2 另須驗證 MCP error sanitizer；backend attestation 永遠不等於 protected。
+P0 仍缺：可信身分、normalize 前封閉原始 schema 與外部 per-digest field matrix（G0-COVERAGE）、queue／backpressure／cancel／durable audit 的實際故障，以及 route activation。缺 evidence 的 strict policy 不可 activate。P2 另須驗證 MCP error sanitizer；backend attestation 永遠不等於 protected。
 
 Detector 提供 evidence，不能授權；tools/list 隱藏不能替代 tools/call 授權；unknown／缺 context／缺 evidence 不靜默 allow。
 
@@ -55,6 +56,7 @@ Detector 提供 evidence，不能授權；tools/list 隱藏不能替代 tools/ca
 |---|---|
 | [P0 第一個實作切片](docs/p0-implementation.md) | stock diagnostic、evidence preflight 與起始驗證範圍 |
 | [Strict parser ADR](docs/adr-001-strict-gateway-wire.md) | 下游 patch、canonical wire、驗收與建置修正 |
+| [Guard deadline ADR](docs/adr-002-guard-deadline-budget.md) | 預算宣告閘門、fixture-modeled adapter、8 組案例與未涵蓋範圍 |
 | [技術選型與 P0–P6](docs/implementation-plan.md) | 架構、元件取捨、PR-sized backlog 與 exit gates |
 | [協定與 policy](docs/protocol-contracts.md) | wire、可信 context、coverage oracle、ExtMCP/error 邊界 |
 | [Review 硬 gate](docs/review-gates.md) | fixtures、oracle、統計／故障與 release gates |
@@ -75,3 +77,5 @@ PR #7 與 #8 原為重複實作；#7 已由 #8 取代，保留 #8 作為唯一�
 Patched build 與 acceptance 現在分為不同 CI jobs。手動驗收必須從受信 build job 取得 `BUILD_MANIFEST_SHA256`；不要對任意下載的 manifest 自行計算 hash 後當作受信來源。Compose 也要求此值。完整 build 流程以 `.github/workflows/p0-patched.yml` 為準；PR run 不產生 production approval。
 
 建置入口從固定 upstream Git object 重算 patch，不信任 manifest 自報的 patched hash；使用乾淨的 Cargo home／target 與完整工具鏈 pin。安裝輸出使用 no-follow 目錄 handles，拒絕 symlink 父目錄。每項修正都有可失敗的回歸測試，完整結果以目前 head 的 CI artifacts 為準。
+
+Guard deadline 切片見 [ADR-002](docs/adr-002-guard-deadline-budget.md)：`agentguard/deadline.py` 只提供宣告閘門，`tools/deadline_probe.py` 對真實 patched Gateway 跑 8 組案例。guard 超預算必須是**已送達**的 fail-closed 503，Gateway 逾時必須是**沒有送達決策**的 availability fault，兩者不可互相替代，也不得把逾時算成防禦。`p0-patched` workflow 同時改為不限制 base branch，讓 stacked P0 PR 跑同一組真實驗收。
