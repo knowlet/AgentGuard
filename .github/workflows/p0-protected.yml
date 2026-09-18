@@ -11,7 +11,7 @@ concurrency:
 jobs:
   inputs:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 45
     steps:
       - name: Checkout exact event commit without persistent credentials
         env:
@@ -45,5 +45,52 @@ jobs:
         with:
           name: p0-build-inputs
           path: ${{ runner.temp }}/inputs/
+          if-no-files-found: error
+          retention-days: 7
+      - name: Apply strict parser to audited upstream
+        run: |
+          mkdir -p reports
+          python3 -m tools.patch_gateway --upstream "$RUNNER_TEMP/upstream" --report reports/gateway-patch.json
+      - name: Install pinned upstream Rust toolchain
+        run: rustup toolchain install 1.98.0 --profile minimal
+      - name: Compile and test actual upstream parser
+        env:
+          RUSTUP_TOOLCHAIN: 1.98.0
+          CARGO_BUILD_JOBS: '2'
+          CARGO_PROFILE_DEV_DEBUG: '0'
+          CARGO_PROFILE_TEST_DEBUG: '0'
+          CARGO_INCREMENTAL: '0'
+        run: |
+          set -o pipefail
+          cd "$RUNNER_TEMP/upstream"
+          cargo test --locked -p agentgateway --no-default-features --features crypto-aws-lc --lib agentguard_strict -- --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/reports/rust-tests.log"
+          cargo build --locked -p agentgateway-app --no-default-features --features crypto-aws-lc --bin agentgateway 2>&1 | tee "$GITHUB_WORKSPACE/reports/gateway-build.log"
+      - name: Record build manifest and preserve runnable binary
+        env:
+          BUILD_SHA: ${{ github.sha }}
+        run: |
+          mkdir -p build
+          cp "$RUNNER_TEMP/upstream/target/debug/agentgateway" build/agentgateway
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          manifest = json.loads(Path('reports/gateway-patch.json').read_text())
+          manifest.update(kind='agentguard-gateway-build/v1',
+              binary_sha256=hashlib.sha256(Path('build/agentgateway').read_bytes()).hexdigest(),
+              agentguard_commit=os.environ['BUILD_SHA'],
+              rust_toolchain='1.98.0', build_profile='dev',
+              target='x86_64-unknown-linux-gnu', features=['crypto-aws-lc'], default_features=False)
+          Path('build/manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+          print(json.dumps(manifest, indent=2))
+          PY
+          sha256sum build/manifest.json > build/manifest.sha256
+      - name: Preserve build outputs and failure logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: p0-gateway-build
+          path: |
+            build/
+            reports/
           if-no-files-found: error
           retention-days: 7
