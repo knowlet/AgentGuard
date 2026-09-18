@@ -223,6 +223,7 @@ def deadline_status(rows: list) -> str:
     """Bind the gate to the pinned contract, never to the runner registry."""
     expected = registered_cases()
     try:
+        _validate_contract(EXPECTED_CONTRACT)
         if not registries_agree():
             return 'FAIL'
         if type(rows) is not list or len(rows) != EXPECTED_CASE_COUNT:

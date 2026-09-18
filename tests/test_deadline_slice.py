@@ -111,17 +111,14 @@ class DeadlineEvidence(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'CONTRACT_CHANGED'):
                 probe.cases()
             self.assertEqual(probe.deadline_status([observation(c) for c in probe.runner_cases()]), 'FAIL')
-        # A contract that contradicts its own boundary is refused as well.
-        with patch.object(probe, 'EXPECTED_CONTRACT', tuple(broken)), \
-             patch.object(probe, 'EXPECTED_CONTRACT_SHA256', 'not-the-digest'):
-            with self.assertRaisesRegex(ValueError, 'CONTRACT_CHANGED'):
-                probe.cases()
-        inconsistent = list(probe.EXPECTED_CONTRACT)
-        inconsistent[3] = ('just_over_budget_request', 'request', 10, 'guard_deadline_decision')
-        with patch.object(probe, 'EXPECTED_CONTRACT', tuple(inconsistent)), \
-             patch.object(probe, 'contract_digest', lambda contract=None: probe.EXPECTED_CONTRACT_SHA256):
+        # A contract whose boundary contradicts its expectation is refused even
+        # when its digest is pinned correctly, so this reaches _validate_contract.
+        inconsistent = tuple(broken)
+        with patch.object(probe, 'EXPECTED_CONTRACT', inconsistent), \
+             patch.object(probe, 'EXPECTED_CONTRACT_SHA256', probe.contract_digest(inconsistent)):
             with self.assertRaisesRegex(ValueError, 'DEADLINE_CASE_INVALID'):
                 probe.cases()
+            self.assertEqual(probe.deadline_status([observation(c) for c in probe.runner_cases()]), 'FAIL')
 
     def test_shrunk_or_replaced_suite_cannot_pass(self):
         rows = [observation(c) for c in probe.cases()]
