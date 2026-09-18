@@ -1,9 +1,25 @@
 # PR #7 / #8 consolidation — 2026-09-18
 
 PR #7 and #8 were duplicate implementations of the same P0 work, not stacked
-changes. #7 is closed without merge or branch deletion. #8 is the only maintained
-implementation. Historical #7 builds and reviews are retained, not relabelled as
-fixed or passed on that old branch.
+changes. #7 is closed without merge or branch deletion. Historical #7 builds and
+reviews are retained, not relabelled as fixed or passed on that old branch.
+
+## State after the #8 merge
+
+#8 was squash-merged into `develop` as `27046ff` ("feat(p0): harden Gateway wire
+parsing and verify dual-phase context (#8)"). Its content is preserved exactly:
+files that only #8 touched, such as `tools/context_probe.py`,
+`docs/adr-001-strict-gateway-wire.md` and the strict-wire patch, are byte-identical
+between `develop` and the branch that carried #8.
+
+The P0 deadline slice (PR #9) was stacked on #8 and is now retargeted to
+`develop`. Because #8 landed as a **squash**, a branch that still carries #8's
+original commits has no shared history with `develop` beyond the pre-#8 base, so
+GitHub's three-dot diff re-includes #8's files next to the new slice. That is a
+display artifact of the squash, not a second copy of the work: the three files
+the deadline slice also edits (`tools/gateway_acceptance.py`, `README.md`,
+`.github/workflows/p0-patched.yml`) are the only ones whose content differs from
+`develop`, and each difference is the slice's own addition.
 
 | Review concern | Canonical implementation and executable evidence |
 |---|---|
