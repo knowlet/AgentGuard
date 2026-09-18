@@ -2,15 +2,20 @@
 
 The webhook fixture models the guard adapter: it consumes a DECLARED stage
 latency and answers fail-closed with GUARD_DEADLINE_EXCEEDED once that declared
-latency exceeds the declared guard budget. The declared value is used for the
-decision so the boundary comparison is deterministic; the wall-clock elapsed time
-is still observed and asserted, because that is what distinguishes a guard
-decision from a Gateway-side timeout.
+latency exceeds the declared guard budget. The declared value drives the decision
+so the boundary comparison is deterministic; wall-clock elapsed time is still
+observed and asserted.
+
+A guard outcome and a Gateway outcome are never interchangeable, and neither is
+inferred from timing alone:
+
+* guard outcome  - the decision reached the Gateway (delivered), and the
+  Gateway's own access log records the guardrail reject or the allow;
+* Gateway outcome - the hook never answered, and the Gateway's own log has to say
+  why: "upstream call timeout" versus a premature connection close.
 
 This is a fixture-modelled adapter on the context-preflighted route, not a real
-detector, not a latency SLO, and not a complete G0-DEADLINE evaluation. A
-Gateway timeout is reported as an availability fault and is never counted as a
-defense.
+detector, not a latency SLO, and not a complete G0-DEADLINE evaluation.
 """
 from __future__ import annotations
 import argparse
@@ -19,6 +24,7 @@ from http.server import ThreadingHTTPServer
 import hashlib
 import json
 from pathlib import Path
+import re
 import socket
 import subprocess
 import tempfile
@@ -38,17 +44,35 @@ from tools.gateway_acceptance import verify_build
 from tools.process_identity import require_listener, wait_listener
 
 GUARD_DENIAL_BODY = b'Guard deadline exceeded'
-# The observed Gateway-side boundary; wide enough for runner scheduling noise,
-# narrow enough that a guard decision can never be mistaken for a timeout.
+# The Gateway-side boundary. These bounds are sanity checks only; the REASON comes
+# from the Gateway's own log evidence below, never from an elapsed-time window.
 TIMEOUT_MIN_MS = 9000
 TIMEOUT_MAX_MS = 16000
-EXPECTED_CASE_COUNT = 8
+# A hook that dies just before the timeout must not be counted as a timeout.
+EARLY_DISCONNECT_MS = 9000
+LOG_SETTLE_SECONDS = 3.0
+EXPECTED_CASE_COUNT = 9
+AVAILABILITY_FAULTS = ('gateway_timeout', 'upstream_transport_fault')
 EXPECTED_CLASS = {'allow': 'allow', 'guard_deny': 'guard_deadline_decision',
-                  'gateway_timeout': 'availability_fault'}
-# The GATE's expectation: (id, slow phase, declared stage ms, expected class). It
-# is a separate literal from the runner registry below and is pinned by its own
-# digest, so editing what the runner executes cannot redefine what the gate
-# accepts. Update the digest only as part of a reviewed suite change.
+                  'gateway_timeout': 'gateway_timeout',
+                  'transport_disconnect': 'upstream_transport_fault'}
+# Gateway log evidence, per phase. The matched marker NAMES are recorded in the
+# report so a reviewer re-checks the classification instead of trusting timing.
+GATEWAY_MARKERS = {
+    'timeout': {
+        'request': b'failed to call prompt guard webhook: upstream call timeout',
+        'response': b'failed to apply response prompt guard: upstream call timeout'},
+    'transport': {
+        'request': b'failed to call prompt guard webhook: upstream call failed: SendRequest: connection closed before message completed',
+        'response': b'failed to apply response prompt guard: upstream call failed: SendRequest: connection closed before message completed'},
+    'guardrail_reject': {
+        'request': b'"phase": "request", "guard": "webhook", "action": "reject"',
+        'response': b'"phase": "response", "guard": "webhook", "action": "reject"'},
+}
+# The GATE's expectation: (id, slow phase, declared stage ms, expected class). It is
+# a separate literal from the runner registry below and is pinned by its own digest,
+# so editing what the runner executes cannot redefine what the gate accepts. Update
+# the digest only as part of a reviewed suite change.
 EXPECTED_CONTRACT = (
     ('inside_budget_request', 'request', 1200, 'allow'),
     ('inside_budget_response', 'response', 1200, 'allow'),
@@ -56,10 +80,11 @@ EXPECTED_CONTRACT = (
     ('just_over_budget_request', 'request', DECLARED_GUARD_BUDGET_MS + 1, 'guard_deadline_decision'),
     ('just_over_budget_response', 'response', DECLARED_GUARD_BUDGET_MS + 1, 'guard_deadline_decision'),
     ('over_budget_request', 'request', 4000, 'guard_deadline_decision'),
-    ('unbounded_stage_timeout_request', 'request', 11000, 'availability_fault'),
-    ('unbounded_stage_timeout_response', 'response', 11000, 'availability_fault'),
+    ('unbounded_stage_timeout_request', 'request', 11000, 'gateway_timeout'),
+    ('unbounded_stage_timeout_response', 'response', 11000, 'gateway_timeout'),
+    ('early_disconnect_request', 'request', EARLY_DISCONNECT_MS, 'upstream_transport_fault'),
 )
-EXPECTED_CONTRACT_SHA256 = 'e03727dbd72709a05668658a051eda34b9c9b9702cf53c9d30bacae91ea307b4'
+EXPECTED_CONTRACT_SHA256 = '535cffdaa5d479cfc6bdcb972eb0eeceb7fc6ed2e7ec1ec366cccd305943a8bf'
 # The RUNNER's registry: the same cases, expressed as the outcomes the fixture
 # reproduces. cases() refuses to run unless it agrees with the contract above.
 REGISTERED_CASES = (
@@ -71,6 +96,7 @@ REGISTERED_CASES = (
     ('over_budget_request', 'request', 4000, 'guard_deny'),
     ('unbounded_stage_timeout_request', 'request', 11000, 'gateway_timeout'),
     ('unbounded_stage_timeout_response', 'response', 11000, 'gateway_timeout'),
+    ('early_disconnect_request', 'request', EARLY_DISCONNECT_MS, 'transport_disconnect'),
 )
 
 
@@ -126,7 +152,11 @@ def _validate_contract(contract) -> None:
             raise ValueError('DEADLINE_CASE_INVALID')
         if expected_class == 'guard_deadline_decision' and not over_budget(stage_ms):
             raise ValueError('DEADLINE_CASE_INVALID')
-        if expected_class == 'availability_fault' and stage_ms <= GATEWAY_WEBHOOK_TIMEOUT_MS:
+        if expected_class == 'gateway_timeout' and stage_ms <= GATEWAY_WEBHOOK_TIMEOUT_MS:
+            raise ValueError('DEADLINE_CASE_INVALID')
+        # The negative control has to sit late enough to race the timeout, but
+        # before it, otherwise it would not distinguish the two failure modes.
+        if expected_class == 'upstream_transport_fault' and not TIMEOUT_MIN_MS <= stage_ms < GATEWAY_WEBHOOK_TIMEOUT_MS:
             raise ValueError('DEADLINE_CASE_INVALID')
 
 
@@ -147,23 +177,6 @@ def cases() -> list[dict]:
     return runner_cases()
 
 
-def classify(row: dict) -> str:
-    """Derive the outcome from observations; never read a self-reported class."""
-    decisions = row.get('guard_decisions')
-    if type(decisions) is not list or type(row.get('counts')) is not dict:
-        return 'UNKNOWN'
-    delivered = [d for d in decisions if isinstance(d, dict) and d.get('delivered') is True]
-    undelivered = [d for d in decisions if isinstance(d, dict) and d.get('delivered') is not True]
-    if delivered and delivered[-1].get('allowed') is False and delivered[-1].get('reason') == GUARD_DEADLINE_EXCEEDED:
-        return 'guard_deadline_decision'
-    if delivered and all(d.get('allowed') is True for d in delivered) and row.get('http_status') == 200:
-        return 'allow'
-    elapsed = row.get('elapsed_ms')
-    if undelivered and type(elapsed) in (int, float) and elapsed >= TIMEOUT_MIN_MS:
-        return 'availability_fault'
-    return 'UNKNOWN'
-
-
 def expected_counts(case: dict) -> dict:
     # Both hooks run for an allowed request; any stop ends the phases after it.
     if case['expected_class'] == 'allow':
@@ -178,42 +191,116 @@ def expected_hook_calls(case: dict) -> int:
     return counts['request'] + counts['response']
 
 
+def decision_contract(case: dict) -> list[dict]:
+    """Exact ordered decision contract: phase identity, order, role and delivery."""
+    expected_class = case['expected_class']
+    counts = expected_counts(case)
+    contract = []
+    for phase in ('request', 'response'):
+        if counts[phase] == 0:
+            continue
+        slow = phase == case['phase']
+        entry = {'phase': phase, 'stage_ms': case['stage_ms'] if slow else 0,
+                 'allowed': True, 'reason': 'FIXTURE_ALLOW',
+                 'delivered': True, 'decision_write': 'ok'}
+        if slow and expected_class == 'guard_deadline_decision':
+            entry.update(allowed=False, reason=GUARD_DEADLINE_EXCEEDED)
+        if slow and expected_class in AVAILABILITY_FAULTS:
+            # The adapter exceeded its budget but the answer never reached the
+            # Gateway: written-but-unread for a Gateway timeout, never written for
+            # a hook that died first.
+            entry.update(allowed=False, reason=GUARD_DEADLINE_EXCEEDED, delivered=False,
+                         decision_write='failed' if expected_class == 'gateway_timeout' else 'not_attempted')
+        contract.append(entry)
+    return contract
+
+
+def decisions_match(row: dict, case: dict) -> bool:
+    """Compare every registered field of every decision, in order."""
+    expected = decision_contract(case)
+    actual = row.get('guard_decisions')
+    if type(actual) is not list or len(actual) != len(expected):
+        return False
+    for want, got in zip(expected, actual):
+        if type(got) is not dict:
+            return False
+        for key, value in want.items():
+            if got.get(key) != value or type(got.get(key)) is not type(value):
+                return False
+    return True
+
+
+def gateway_evidence_matches(row: dict, case: dict) -> bool:
+    """The Gateway log, not the clock, decides which failure this was."""
+    markers = row.get('gateway_markers')
+    if type(markers) is not list or any(type(m) is not str for m in markers):
+        return False
+    phase = case['phase']
+    expected_class = case['expected_class']
+    if expected_class == 'gateway_timeout':
+        return markers == ['timeout:' + phase]
+    if expected_class == 'upstream_transport_fault':
+        return markers == ['transport:' + phase]
+    if expected_class == 'guard_deadline_decision':
+        return markers == ['guardrail_reject:' + phase]
+    if expected_class == 'allow':
+        return markers == []
+    return False
+
+
+def classify(row: dict) -> str:
+    """Derive the outcome from observations; never read a self-reported class."""
+    decisions = row.get('guard_decisions')
+    if type(decisions) is not list or type(row.get('counts')) is not dict:
+        return 'UNKNOWN'
+    delivered = [d for d in decisions if isinstance(d, dict) and d.get('delivered') is True]
+    last = decisions[-1] if decisions else None
+    if isinstance(last, dict) and last.get('delivered') is False:
+        # The last phase never answered, so the Gateway produced the result and only
+        # its own log can name the reason.
+        markers = row.get('gateway_markers')
+        if type(markers) is not list:
+            return 'UNKNOWN'
+        if markers == ['timeout:' + str(row.get('phase'))]:
+            return 'gateway_timeout'
+        if markers == ['transport:' + str(row.get('phase'))]:
+            return 'upstream_transport_fault'
+        return 'UNKNOWN'
+    if delivered and delivered[-1].get('allowed') is False and delivered[-1].get('reason') == GUARD_DEADLINE_EXCEEDED:
+        return 'guard_deadline_decision'
+    if delivered and all(d.get('allowed') is True for d in delivered) and row.get('http_status') == 200:
+        return 'allow'
+    return 'UNKNOWN'
+
+
 def case_passes(row: dict, case: dict) -> bool:
     try:
         if row.get('id') != case['id'] or row.get('process_listener_owned') is not True:
             return False
         if type(row['http_status']) is not int or type(row['elapsed_ms']) not in (int, float):
             return False
-        if any(type(v) is not int for v in row['counts'].values()):
+        if type(row['counts']) is not dict or any(type(v) is not int for v in row['counts'].values()):
+            return False
+        if row['counts'] != expected_counts(case):
+            return False
+        # The Gateway's own access log must agree with what the client observed.
+        if row.get('gateway_http_status') != row['http_status']:
+            return False
+        if not decisions_match(row, case) or not gateway_evidence_matches(row, case):
             return False
         if classify(row) != case['expected_class']:
             return False
-        decisions = row['guard_decisions']
-        # Pin the number of hook decisions: an observation with extra (or missing)
-        # decisions must not be able to satisfy any branch below.
-        if type(decisions) is not list or len(decisions) != expected_hook_calls(case):
-            return False
-        slow = [d for d in decisions if type(d.get('stage_ms')) is int and d['stage_ms'] > 0]
-        if len(slow) != 1 or slow[0]['stage_ms'] != case['stage_ms'] or slow[0].get('phase') != case['phase']:
-            return False
         if case['expected_class'] == 'allow':
-            return (stock.control_passes(row, 'allow')
-                    and row['counts'] == expected_counts(case)
-                    and row['elapsed_ms'] < TIMEOUT_MIN_MS
-                    and all(d.get('allowed') is True and d.get('delivered') is True for d in decisions))
+            return stock.control_passes(row, 'allow') and row['elapsed_ms'] < TIMEOUT_MIN_MS
         if case['expected_class'] == 'guard_deadline_decision':
-            return (row['http_status'] == 503 and row['counts'] == expected_counts(case)
-                    and row['client_marker_visible'] is False
+            return (row['http_status'] == 503 and row['client_marker_visible'] is False
                     and row['client_body_is_guard_denial'] is True
-                    and 0 < row['elapsed_ms'] < TIMEOUT_MIN_MS
-                    and slow[0]['allowed'] is False and slow[0]['reason'] == GUARD_DEADLINE_EXCEEDED
-                    and slow[0]['delivered'] is True)
-        if case['expected_class'] == 'availability_fault':
-            return (400 <= row['http_status'] <= 599 and row['counts'] == expected_counts(case)
-                    and row['client_marker_visible'] is False
+                    and 0 < row['elapsed_ms'] < TIMEOUT_MIN_MS)
+        if case['expected_class'] in AVAILABILITY_FAULTS:
+            return (400 <= row['http_status'] <= 599 and row['client_marker_visible'] is False
                     and row['client_body_is_guard_denial'] is False
                     and TIMEOUT_MIN_MS <= row['elapsed_ms'] <= TIMEOUT_MAX_MS
-                    and slow[0]['delivered'] is False)
+                    and row.get('gateway_log_bytes', 0) > 0)
         return False
     except (KeyError, TypeError, AttributeError):
         return False
@@ -236,10 +323,10 @@ def deadline_status(rows: list) -> str:
         classes = {r['id']: classify(r) for r in rows}
         if not all(classes[case['id']] == case['expected_class'] for case in expected):
             return 'FAIL'
-        # An availability fault must be attributable to a phase that never
+        # An availability fault must be attributable to the phase that never
         # delivered: only fast phases may have answered.
         for row in rows:
-            if classes[row['id']] != 'availability_fault':
+            if classes[row['id']] not in AVAILABILITY_FAULTS:
                 continue
             if any(d.get('delivered') is True and type(d.get('stage_ms')) is int and d['stage_ms'] > 0
                    for d in row['guard_decisions']):
@@ -250,7 +337,8 @@ def deadline_status(rows: list) -> str:
 
 
 @contextmanager
-def deadline_fixture(slow_phase: str, stage_ms: int, budget_ms: int = DECLARED_GUARD_BUDGET_MS):
+def deadline_fixture(slow_phase: str, stage_ms: int, budget_ms: int = DECLARED_GUARD_BUDGET_MS,
+                     disconnect: bool = False):
     """Loopback webhook fixture that models a budget-aware guard adapter."""
     state = stock.FixtureState()
     state.reset(slow_phase, 'allow', '')
@@ -275,13 +363,26 @@ def deadline_fixture(slow_phase: str, stage_ms: int, budget_ms: int = DECLARED_G
                 try:
                     if delay:
                         time.sleep(delay / 1000)
+                    if disconnect and phase == slow_phase:
+                        # The hook dies before answering: nothing is written, so the
+                        # Gateway can only report a transport failure.
+                        with state.lock:
+                            state.guard_decisions.append({
+                                'phase': phase, 'allowed': False, 'reason': GUARD_DEADLINE_EXCEEDED,
+                                'stage_ms': delay, 'delivered': False, 'decision_write': 'not_attempted'})
+                        self.close_connection = True
+                        try:
+                            self.connection.shutdown(socket.SHUT_RDWR)
+                        except OSError:
+                            pass
+                        return
                     exceeded = over_budget(delay, budget_ms)
                     reason = GUARD_DEADLINE_EXCEEDED if exceeded else 'FIXTURE_ALLOW'
                     action = {'reason': reason}
                     if exceeded:
                         action.update(status_code=503, body=GUARD_DENIAL_BODY.decode())
                     raw = json.dumps({'action': action}).encode()
-                    delivered = True
+                    decision_write = 'ok'
                     try:
                         self.send_response(200)
                         self.send_header('Content-Type', 'application/json')
@@ -290,13 +391,14 @@ def deadline_fixture(slow_phase: str, stage_ms: int, budget_ms: int = DECLARED_G
                         self.wfile.write(raw)
                     except OSError:
                         # The Gateway gave up on this hook; the decision exists but
-                        # never reached it. Recording that is what separates an
-                        # adapter overrun from a Gateway-side timeout.
-                        delivered = False
+                        # never reached it. Recording the WRITE outcome separately
+                        # from the Gateway outcome keeps the two distinguishable.
+                        decision_write = 'failed'
                     with state.lock:
                         state.guard_decisions.append({'phase': phase, 'allowed': not exceeded,
                                                       'reason': reason, 'stage_ms': delay,
-                                                      'delivered': delivered})
+                                                      'delivered': decision_write == 'ok',
+                                                      'decision_write': decision_write})
                 finally:
                     with state.lock:
                         state.inflight -= 1
@@ -326,9 +428,37 @@ def wait_idle(state, seconds: float) -> bool:
         time.sleep(.05)
 
 
-def observed_call(url, state, case) -> dict:
+def log_fragment(log_path: Path, offset: int) -> bytes:
+    with log_path.open('rb') as log:
+        log.seek(offset)
+        return log.read(stock.LIMIT)
+
+
+def wait_gateway_log(log_path: Path, offset: int, seconds: float = LOG_SETTLE_SECONDS) -> bytes:
+    """Wait for the Gateway's own completion line, then keep the whole fragment."""
+    deadline = time.monotonic() + seconds
+    fragment = b''
+    while True:
+        fragment = log_fragment(log_path, offset)
+        if b'http.status=' in fragment or time.monotonic() >= deadline:
+            return fragment
+        time.sleep(.02)
+
+
+def log_evidence(fragment: bytes) -> tuple[list[str], int | None]:
+    found = []
+    for name, markers in GATEWAY_MARKERS.items():
+        for phase, marker in markers.items():
+            if marker in fragment:
+                found.append(name + ':' + phase)
+    statuses = re.findall(rb'http\.status=(\d{3})', fragment)
+    return sorted(found), int(statuses[-1]) if statuses else None
+
+
+def observed_call(url, state, case, log_path: Path) -> dict:
     payload = json.dumps({'model': 'fixture', 'stream': False,
                           'messages': stock.expected_messages(state.marker)}).encode()
+    offset = log_path.stat().st_size
     start = time.monotonic()
     request = Request(url, data=payload, headers={'Content-Type': 'application/json'})
     # Never inherit HTTP_PROXY for an isolated loopback test.
@@ -346,6 +476,8 @@ def observed_call(url, state, case) -> dict:
     # The slow phase must finish (or fail to deliver) before the row is snapshotted.
     if not wait_idle(state, case['stage_ms'] / 1000 + 5):
         raise ValueError('DEADLINE_FIXTURE_STILL_BUSY')
+    fragment = wait_gateway_log(log_path, offset)
+    markers, gateway_status = log_evidence(fragment)
     try:
         decoded = json.loads(body)
     except (ValueError, UnicodeError):
@@ -364,14 +496,18 @@ def observed_call(url, state, case) -> dict:
             'upstream_received_marker': upstream_received_marker,
             'request_structure_preserved': stock.valid_request_structure(upstream_payload, marker),
             'response_structure_preserved': stock.valid_response_structure(decoded, content),
-            'guard_decisions': decisions, 'process_listener_owned': True}
+            'guard_decisions': decisions, 'process_listener_owned': True,
+            'gateway_markers': markers, 'gateway_http_status': gateway_status,
+            'gateway_log_offset': offset, 'gateway_log_bytes': len(fragment),
+            'gateway_log_sha256': hashlib.sha256(fragment).hexdigest()}
 
 
 def run_suite(data: bytes, build: dict, report_path: Path) -> dict:
     report_path.parent.mkdir(parents=True, exist_ok=True)
     rows = []
     for case in cases():
-        with deadline_fixture(case['phase'], case['stage_ms']) as (state, target), \
+        with deadline_fixture(case['phase'], case['stage_ms'],
+                              disconnect=case['outcome'] == 'transport_disconnect') as (state, target), \
                 tempfile.TemporaryDirectory() as directory:
             with socket.socket() as reserved:
                 reserved.bind(('127.0.0.1', 0))
@@ -394,7 +530,7 @@ def run_suite(data: bytes, build: dict, report_path: Path) -> dict:
                                            shell=False, env={'HOME': directory, 'RUST_LOG': 'info'})
                 try:
                     wait_listener(process, exe, port)
-                    row = observed_call(f'http://127.0.0.1:{port}/v1/chat/completions', state, case)
+                    row = observed_call(f'http://127.0.0.1:{port}/v1/chat/completions', state, case, log_path)
                     require_listener(process, exe, port)
                     row.update(config_sha256=hashlib.sha256(cfg.read_bytes()).hexdigest(),
                                config_file=saved.name, gateway_log_file=log_path.name)
@@ -407,18 +543,24 @@ def run_suite(data: bytes, build: dict, report_path: Path) -> dict:
                     except subprocess.TimeoutExpired:
                         process.kill()
                         process.wait(timeout=5)
+    classes = {r['id']: classify(r) for r in rows}
     result = {'kind': 'REAL_GATEWAY_DEADLINE_SLICE', 'build': build, 'cases': rows,
               'registered_cases': EXPECTED_CASE_COUNT,
               'declared_guard_budget_ms': DECLARED_GUARD_BUDGET_MS,
               'declared_stages_ms': dict(DECLARED_BUDGET_MS),
               'transport_reserve_ms': TRANSPORT_RESERVE_MS, 'safety_margin_ms': SAFETY_MARGIN_MS,
               'effective_gateway_timeout_ms': GATEWAY_WEBHOOK_TIMEOUT_MS,
-              'classes': {r['id']: classify(r) for r in rows},
-              'availability_faults': [r['id'] for r in rows if classify(r) == 'availability_fault'],
-              'guard_deadline_decisions': [r['id'] for r in rows if classify(r) == 'guard_deadline_decision'],
+              'classes': classes,
+              'availability_faults': [i for i, c in classes.items() if c in AVAILABILITY_FAULTS],
+              'gateway_timeouts': [i for i, c in classes.items() if c == 'gateway_timeout'],
+              'upstream_transport_faults': [i for i, c in classes.items() if c == 'upstream_transport_fault'],
+              'guard_deadline_decisions': [i for i, c in classes.items() if c == 'guard_deadline_decision'],
               'deadline_gate': deadline_status(rows),
+              'outcome_separation': {'guard_outcome': 'delivered decision or Gateway guardrail_reject marker',
+                                     'gateway_outcome': 'Gateway log marker timeout vs transport'},
               'scope': ('fixture-modelled guard adapter on the preflighted context route; '
-                        'declared-stage boundary and Gateway-timeout separation only'),
+                        'declared-stage boundary, per-phase decision contract and Gateway-log '
+                        'timeout/transport separation only'),
               'not_evaluated': ['detector latency', 'queue depth', 'backpressure', 'cancellation',
                                 'long-LLM SLO'],
               'p0_release_gate': 'NOT_EVALUATED', 'asr_fpr': 'NOT_EVALUATED',

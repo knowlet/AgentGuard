@@ -12,7 +12,7 @@ AgentGuard 是以 **AgentGateway 作為 enforcement plane** 的 protocol-aware a
 | Strict wire patch | 在 Gateway 內驗證唯一 action、物件形狀、欄位與型別、phase、reject status、HTTP 故障；exact-source installer | 不是上游官方 release 修復，也不是另一個 reverse proxy |
 | Patched acceptance | 6 個合法 controls、84 個負向 phase cases、10 個 transport faults 與 10 次 recovery；Serde、native Gateway、Compose 分層驗證 | 不涵蓋原始 request field coverage、所有 timeout/load、MCP 或 detector 效果 |
 | 雙向 context | 原始 request snapshot 的 CEL mapping、37 組 request/response 案例、每階段決策與 payload 保存驗證 | 不是 authentication、任意欄位 coverage 或 route activation |
-| Guard deadline | 宣告閘門（stage／reserve／margin 需小於 10 秒有效 Gateway timeout）、8 組真實 Gateway below／at／above budget 案例、guard 決策送達與 Gateway timeout 分開記帳 | 不是 latency SLO、detector 延遲、queue／backpressure／cancel，也不是完整 G0-DEADLINE |
+| Guard deadline | 宣告閘門（stage／reserve／margin 需小於 10 秒有效 Gateway timeout）、9 組真實 Gateway below／at／above budget 案例（含提前斷線負向 control）、以單次呼叫的 Gateway log slice 區分 guard 決策、真正 timeout 與 transport 故障 | 不是 latency SLO、detector 延遲、queue／backpressure／cancel，也不是完整 G0-DEADLINE |
 | Evidence preflight | artifact hash、Gateway/config/compiler/adapter digests、scope、freshness、必要 context/coverage/gates | 不是完整 policy compiler、簽章驗證服務或 route activation |
 | 統計與結果契約 | Wilson CI、固定樣本規劃、獨立 availability-fault 記帳與回歸測試 | 不是已執行的模型 benchmark 或完整 joint release evaluator |
 
@@ -56,7 +56,7 @@ Detector 提供 evidence，不能授權；tools/list 隱藏不能替代 tools/ca
 |---|---|
 | [P0 第一個實作切片](docs/p0-implementation.md) | stock diagnostic、evidence preflight 與起始驗證範圍 |
 | [Strict parser ADR](docs/adr-001-strict-gateway-wire.md) | 下游 patch、canonical wire、驗收與建置修正 |
-| [Guard deadline ADR](docs/adr-002-guard-deadline-budget.md) | 預算宣告閘門、fixture-modeled adapter、8 組案例與未涵蓋範圍 |
+| [Guard deadline ADR](docs/adr-002-guard-deadline-budget.md) | 預算宣告閘門、fixture-modeled adapter、9 組案例、逐筆決策契約與未涵蓋範圍 |
 | [技術選型與 P0–P6](docs/implementation-plan.md) | 架構、元件取捨、PR-sized backlog 與 exit gates |
 | [協定與 policy](docs/protocol-contracts.md) | wire、可信 context、coverage oracle、ExtMCP/error 邊界 |
 | [Review 硬 gate](docs/review-gates.md) | fixtures、oracle、統計／故障與 release gates |
@@ -78,4 +78,4 @@ Patched build 與 acceptance 現在分為不同 CI jobs。手動驗收必須從�
 
 建置入口從固定 upstream Git object 重算 patch，不信任 manifest 自報的 patched hash；使用乾淨的 Cargo home／target 與完整工具鏈 pin。安裝輸出使用 no-follow 目錄 handles，拒絕 symlink 父目錄。每項修正都有可失敗的回歸測試，完整結果以目前 head 的 CI artifacts 為準。
 
-Guard deadline 切片見 [ADR-002](docs/adr-002-guard-deadline-budget.md)：`agentguard/deadline.py` 只提供宣告閘門，`tools/deadline_probe.py` 對真實 patched Gateway 跑 8 組案例。guard 超預算必須是**已送達**的 fail-closed 503，Gateway 逾時必須是**沒有送達決策**的 availability fault，兩者不可互相替代，也不得把逾時算成防禦。`p0-patched` workflow 同時改為不限制 base branch，讓 stacked P0 PR 跑同一組真實驗收。
+Guard deadline 切片見 [ADR-002](docs/adr-002-guard-deadline-budget.md)：`agentguard/deadline.py` 只提供宣告閘門，`tools/deadline_probe.py` 對真實 patched Gateway 跑 9 組案例。guard 超預算必須是**已送達**的 fail-closed 503；Gateway 逾時必須由 Gateway 自己的 log 顯示 `upstream call timeout`，提前斷線則顯示 `connection closed before message completed`。兩者都以 availability fault 記帳，但只有前者支持 timeout 邊界，也不得把逾時算成防禦。`p0-patched` workflow 同時改為不限制 base branch，讓 stacked P0 PR 跑同一組真實驗收。
