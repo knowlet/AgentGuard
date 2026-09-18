@@ -59,14 +59,36 @@ class PatchTransaction(unittest.TestCase):
                 failed = False
                 def injected(src, dst, **kwargs):
                     nonlocal failed
-                    actual = Path(os.readlink(f'/proc/self/fd/{kwargs["dst_dir_fd"]}')) / dst if 'dst_dir_fd' in kwargs else Path(dst)
-                    if actual == target and not failed:
+                    # Compare directory identity by dev/inode: a /proc readlink
+                    # string is kernel-canonicalized, so it never matches a path
+                    # built under a symlinked TMPDIR, and /proc is Linux-only.
+                    if 'dst_dir_fd' in kwargs:
+                        dst_stat = os.fstat(kwargs['dst_dir_fd'])
+                        wanted = os.stat(target.parent)
+                        actual = ((dst_stat.st_dev, dst_stat.st_ino) == (wanted.st_dev, wanted.st_ino)
+                                  and dst == target.name)
+                    else:
+                        actual = Path(dst) == target
+                    if actual and not failed:
                         failed = True
                         raise OSError('injected write failure')
                     return real(src,dst,**kwargs)
                 with patch.object(atomic_files.os, 'replace', side_effect=injected):
                     with self.assertRaises(OSError): patcher.apply(self.source,self.manifest)
                 self.assert_unchanged()
+
+    def test_flagged_index_entry_is_rejected_before_patching(self):
+        def git(*args):
+            return subprocess.check_output(['git', '-C', str(self.source), *args], text=True).strip()
+        for flag in ('--assume-unchanged', '--skip-worktree'):
+            with self.subTest(flag=flag):
+                git('update-index', flag, patcher.WEBHOOK_PATH)
+                # Unmodified content, but Git is told not to re-check this entry.
+                self.assertEqual(git('status', '--porcelain'), '')
+                with self.assertRaisesRegex(ValueError, 'INDEX_FLAG'):
+                    patcher.apply(self.source, self.manifest)
+                self.assert_unchanged()
+                git('update-index', '--no-' + flag[2:], patcher.WEBHOOK_PATH)
 
     def test_success_generates_both_status_checks_and_is_not_reapplicable(self):
         patcher.apply(self.source,self.manifest)

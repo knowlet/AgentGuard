@@ -81,6 +81,25 @@ class BuildContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'BUILD_PATCH_MISMATCH'):
             b.build(self.source, self.manifest, self.output)
 
+    def test_index_flags_cannot_hide_modified_build_inputs(self):
+        relative = 'crates/agentgateway-app/Cargo.toml'
+        for flag in ('--assume-unchanged', '--skip-worktree'):
+            with self.subTest(flag=flag):
+                self.cargo.write_text(self.cargo.read_text() + '# unreviewed build input\n')
+                self.git('update-index', flag, relative)
+                # `git diff` and `git status` omit flagged entries, so nothing
+                # else reports this edit; only an explicit flag check stops it.
+                self.assertNotIn(relative, self.git('diff', '--name-only', 'HEAD').splitlines())
+                self.assertNotIn(relative, self.git('status', '--porcelain').splitlines())
+                with patch.object(b.subprocess, 'check_output', side_effect=self.checked), \
+                     patch.object(b, 'run_compiler', side_effect=self.compile) as run:
+                    with self.assertRaisesRegex(ValueError, 'INDEX_FLAG'):
+                        b.build(self.source, self.manifest, self.output)
+                run.assert_not_called()
+                self.assertFalse(self.output.exists())
+                self.git('update-index', '--no-' + flag[2:], relative)
+                self.cargo.write_text('[features]\ndefault = ["jemalloc","mimalloc","crypto-aws-lc"]\n')
+
     def test_changed_default_features_never_invokes_compiler(self):
         self.cargo.write_text('[features]\ndefault=[]\n')
         with patch.object(b, 'run_compiler') as run:

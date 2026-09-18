@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 from tools.atomic_files import write_set
@@ -15,6 +16,25 @@ WEBHOOK_BLOB = 'b6a9e64f7d541ffecb76eebb384e4308178d0fde'
 
 def git_blob(raw: bytes) -> str:
     return hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest()
+
+
+def hidden_index_entries(raw: bytes) -> list[bytes]:
+    """Paths whose index entry Git is told NOT to re-check.
+
+    ``git diff``, ``git diff --name-only`` and ``git status`` trust the index
+    stat cache, so ``assume-unchanged``, ``skip-worktree``, unmerged, or any
+    other non-normal flag hides worktree edits from all of them. Parses
+    ``git ls-files -v -z`` output, where normal entries are tagged ``H``.
+    """
+    hidden = []
+    for record in raw.split(b'\0'):
+        if not record:
+            continue
+        if record[1:2] != b' ':
+            hidden.append(record)
+        elif record[:1] != b'H':
+            hidden.append(record[2:])
+    return hidden
 
 
 def patched_source(raw: bytes) -> bytes:
@@ -92,6 +112,13 @@ def apply(source: Path, manifest: Path) -> dict:
                                      '--untracked-files=normal'], text=True).strip()
     if dirty:
         raise ValueError('UPSTREAM_WORKTREE_NOT_CLEAN')
+    # `status --porcelain` uses the same stat cache, so it cannot see a worktree
+    # edit whose index entry was flagged. Reject those flags before patching.
+    flags = subprocess.check_output(['git', '-C', str(source), 'ls-files', '-v', '-z'])
+    hidden = hidden_index_entries(flags)
+    if hidden:
+        raise ValueError('UPSTREAM_INDEX_FLAG_HIDES_EDIT: ' +
+                         ', '.join(sorted(os.fsdecode(p) for p in hidden)))
     target = source / WEBHOOK_PATH
     raw = target.read_bytes()
     output = patched_source(raw)

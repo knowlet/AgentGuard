@@ -21,8 +21,32 @@ EXPECTED_CONTEXT = {'x-ag-original-path': '/v1/chat/completions',
                     'x-ag-original-media-type': 'application/json',
                     'x-ag-effective-stream': 'false', 'x-ag-requested-model': 'fixture'}
 
+# Frozen identity registry. The gate is bound to THESE values, not to whatever
+# cases() currently returns, so a shortened suite cannot validate itself.
+PHASES = ('request', 'response')
+CONTROL_CASE_IDS = ('valid', 'default_stream', 'spoofed_headers_overwritten',
+                    'stream_true_spoofed_false', 'wrong_model_spoofed_fixture')
+EXPECTED_MAPPING_HEADERS = ('x-ag-original-path', 'x-ag-original-media-type',
+                            'x-ag-effective-stream', 'x-ag-requested-model')
+MAPPING_FAILURES = ('missing', 'cel_error')
+MAPPING_CASES_PER_PHASE = len(EXPECTED_MAPPING_HEADERS) * len(MAPPING_FAILURES) * 2
+EXPECTED_CASE_COUNT = len(CONTROL_CASE_IDS) + len(PHASES) * MAPPING_CASES_PER_PHASE
+
+
+def registered_ids() -> frozenset[str]:
+    """Frozen case identities, derived from the registry rather than cases()."""
+    ids = set(CONTROL_CASE_IDS)
+    for phase in PHASES:
+        for key in EXPECTED_MAPPING_HEADERS:
+            for failure in MAPPING_FAILURES:
+                for spoof in (False, True):
+                    ids.add('_'.join((phase, failure, key, 'spoof' if spoof else 'plain')))
+    return frozenset(ids)
+
 
 def cases():
+    if set(HEADER_EXPRESSIONS) != set(EXPECTED_MAPPING_HEADERS):
+        raise ValueError('CONTEXT_MAPPING_CHANGED: review the header contract before changing the suite')
     result = [
         {'id': 'valid', 'stream': False, 'allow': True, 'reason': 'CONTEXT_ALLOW'},
         {'id': 'default_stream', 'allow': True, 'reason': 'CONTEXT_ALLOW'},
@@ -31,13 +55,17 @@ def cases():
         {'id': 'wrong_model_spoofed_fixture', 'stream': False, 'model': 'unapproved', 'spoof': True,
          'allow': False, 'reason': 'MODEL_DENIED'},
     ]
-    for phase in ('request', 'response'):
-        for key in HEADER_EXPRESSIONS:
-            for failure in ('missing', 'cel_error'):
+    for phase in PHASES:
+        for key in EXPECTED_MAPPING_HEADERS:
+            for failure in MAPPING_FAILURES:
                 for spoof in (False, True):
                     result.append({'id': '_'.join((phase, failure, key, 'spoof' if spoof else 'plain')),
                                    'stream': False, 'header': key, 'mapping_phase': phase, 'spoof': spoof,
                                    'mapping_failure': failure, 'allow': False, 'reason': 'CONTEXT_UNAVAILABLE'})
+    identities = [c['id'] for c in result]
+    if (len(identities) != EXPECTED_CASE_COUNT or len(set(identities)) != EXPECTED_CASE_COUNT
+            or set(identities) != registered_ids()):
+        raise ValueError('CONTEXT_SUITE_CHANGED: review the registered suite before changing its size')
     return result
 
 
@@ -117,12 +145,15 @@ def case_passes(row: dict, case: dict) -> bool:
 
 
 def context_status(rows: list) -> str:
-    registered = {c['id']: c for c in cases()}
+    expected = registered_ids()
     try:
-        if type(rows) is not list or len(rows) != len(registered) or {r['id'] for r in rows} != set(registered):
+        if type(rows) is not list or len(rows) != EXPECTED_CASE_COUNT or {r['id'] for r in rows} != set(expected):
+            return 'FAIL'
+        registered = {c['id']: c for c in cases()}
+        if set(registered) != set(expected):
             return 'FAIL'
         return 'PASS' if all(case_passes(r, registered[r['id']]) for r in rows) else 'FAIL'
-    except (KeyError, TypeError):
+    except (KeyError, TypeError, ValueError):
         return 'FAIL'
 
 
@@ -215,6 +246,7 @@ def run_suite(data: bytes, build: dict, report_path: Path) -> dict:
                     except subprocess.TimeoutExpired: proc.kill(); proc.wait(timeout=5)
     result = {'kind': 'REAL_GATEWAY_CONTEXT_SLICE', 'build': build, 'cases': rows,
               'context_slice_gate': context_status(rows), 'phases': ['request', 'response'],
+              'registered_cases': EXPECTED_CASE_COUNT,
               'p0_release_gate': 'NOT_EVALUATED', 'asr_fpr': 'NOT_EVALUATED', 'route_activation': 'NOT_IMPLEMENTED',
               'scope': 'original path/media/stream/model CEL mappings, both phases; no identity/coverage claim'}
     report_path.write_text(json.dumps(result, indent=2) + '\n')

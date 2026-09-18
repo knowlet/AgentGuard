@@ -59,6 +59,25 @@ Patch installer 對 decoder、webhook、manifest 全部先 staging，再依序 r
 
 Build 與 acceptance 分成不同 GitHub Actions jobs。Consumer 只下載 `needs.build` 回傳的 artifact ID，manifest SHA-256 由 GitHub job output 傳遞，不從待驗證的本機 manifest 自行重算成信任根；manifest 同時綁完整 fixture、runner、base probe、process/context adapter digests 及固定 84-case 集合。此處僅為同一 PR run 的完整性檢查：PR 作者仍可修改 workflow，沒有 release 簽章／獨立 publisher approval，報告固定 `deployment_approved=false`。不能拿這份 manifest 當 production policy activation 授權。
 
+## 第三輪 review 修正
+
+`git diff` 與 `git status` 都信任 index 的 stat cache，所以 `assume-unchanged`
+或 `skip-worktree` 會讓改過的檔案看起來乾淨。Installer 與 build gate 現在在讀取
+或編譯之前先拒絕任何非 `H` 的 index flag（`UPSTREAM_INDEX_FLAG_HIDES_EDIT`／
+`BUILD_INDEX_FLAG_SET`）。回歸測試先示範 `git status --porcelain` 對該修改保持
+沉默，再斷言兩道 gate 都拒絕且不產生 binary。這仍假設 runner checkout 的 index
+不由對手控制：能設定 flag 的人本來就對工作樹有寫入權，與其他偽造建置輸入的手法
+一樣不在本層的信任邊界內。
+
+Context suite 的 gate 改為綁定 frozen identity registry（5 個 control，加 2 phases
+× 4 headers × 2 failure types × spoof/plain 共 32 個 mapping cases，總計 37 個），
+不再從當下的 `cases()` 推導預期 ID。縮短 `cases()` 或改動 `HEADER_EXPRESSIONS`
+會得到 `CONTEXT_SUITE_CHANGED`／`CONTEXT_MAPPING_CHANGED`，而不是 PASS；挑選
+案例的測試也明確指定 `mapping_failure=missing`，不依賴 `cases()` 的迭代順序。
+
+Rollback 的失敗注入改用 `os.fstat(dst_dir_fd)` 的 dev/inode 與 `os.stat(target.parent)`
+比對目錄身分：`/proc/self/fd` 的 readlink 會回傳 kernel 正規化路徑，在 symlink
+的 TMPDIR 下永遠不相等，且在非 Linux 平台會先拋錯而讓測試假通過。
 
 ## 雙向 context 與第二輪 review
 

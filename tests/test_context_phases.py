@@ -2,7 +2,9 @@
 import copy
 import json
 import unittest
+from unittest.mock import patch
 from urllib.request import Request, urlopen
+from tools import context_probe as probe
 from tools.context_probe import cases, case_passes, context_status, context_fixture, EXPECTED_CONTEXT
 
 
@@ -34,11 +36,30 @@ class ContextPhases(unittest.TestCase):
         from tools.context_probe import context_config
         from agentguard.context import HEADER_EXPRESSIONS
         for phase in ('request', 'response'):
-            case = next(c for c in cases() if c.get('mapping_phase') == phase)
+            case = next(c for c in cases() if c.get('mapping_phase') == phase
+                        and c.get('mapping_failure') == 'missing')
             hooks = context_config(1234, 4321, case)['binds'][0]['listeners'][0]['routes'][0]['policies']['ai']['promptGuard']
             other = 'response' if phase == 'request' else 'request'
             self.assertEqual(hooks[other][0]['webhook']['headers'], HEADER_EXPRESSIONS)
             self.assertNotIn(case['header'], hooks[phase][0]['webhook']['headers'])
+
+    def test_reduced_suite_cannot_be_its_own_oracle(self):
+        rows = [observation(c) for c in cases()]
+        self.assertEqual(context_status(rows), 'PASS')
+        # Even if the generator is shortened to match the rows it produced, the
+        # gate stays bound to the frozen registry and must report FAIL.
+        with patch.object(probe, 'cases', return_value=cases()[:-1]):
+            self.assertEqual(probe.context_status(rows[:-1]), 'FAIL')
+            self.assertEqual(probe.context_status(rows), 'FAIL')
+
+    def test_mapping_contract_change_is_rejected_before_running(self):
+        with patch.object(probe, 'EXPECTED_MAPPING_HEADERS', probe.EXPECTED_MAPPING_HEADERS[:-1]):
+            with self.assertRaisesRegex(ValueError, 'CONTEXT_MAPPING_CHANGED'):
+                probe.cases()
+        dropped = {k: v for k, v in probe.HEADER_EXPRESSIONS.items() if k != 'x-ag-requested-model'}
+        with patch.object(probe, 'HEADER_EXPRESSIONS', dropped):
+            with self.assertRaisesRegex(ValueError, 'CONTEXT_MAPPING_CHANGED'):
+                probe.cases()
 
     def test_omitted_response_hook_never_passes_allowed_request(self):
         case = cases()[0]; row = observation(case)

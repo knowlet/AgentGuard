@@ -53,6 +53,11 @@ def verify_source(source: Path, info: dict) -> dict:
     changed = git('diff', '--name-only', '-z', 'HEAD').split(b'\0')
     if set(filter(None, changed)) != {patcher.WEBHOOK_PATH.encode(), decoder_path.encode()}:
         raise ValueError('BUILD_UNREVIEWED_DIFF')
+    # `git diff`/`git status` trust the index stat cache, so an entry flagged
+    # assume-unchanged or skip-worktree hides its worktree edits from the check
+    # above. Reject those flags instead of compiling unreviewed source.
+    if patcher.hidden_index_entries(git('ls-files', '-v', '-z')):
+        raise ValueError('BUILD_INDEX_FLAG_SET')
     # Also reject untracked/ignored Cargo config, build scripts and stale artifacts.
     # The installer caller marks the one new decoder with git add -N first.
     if git('ls-files', '--others', '-z'):
