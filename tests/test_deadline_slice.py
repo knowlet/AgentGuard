@@ -172,6 +172,19 @@ class DeadlineEvidence(unittest.TestCase):
         bad[index['unbounded_stage_timeout_request']]['guard_decisions'][0]['decision_write'] = 'ok'
         self.assertEqual(probe.deadline_status(bad), 'FAIL')
 
+    def test_row_metadata_is_bound_to_the_case(self):
+        rows = self.rows()
+        index = self.index(rows)
+        for case_id in ('inside_budget_response', 'just_over_budget_response',
+                        'unbounded_stage_timeout_response'):
+            with self.subTest(case_id=case_id):
+                bad = copy.deepcopy(rows)
+                bad[index[case_id]]['phase'] = 'request'
+                self.assertEqual(probe.deadline_status(bad), 'FAIL')
+        bad = copy.deepcopy(rows)
+        bad[index['over_budget_request']]['id'] = 'inside_budget_request'
+        self.assertEqual(probe.deadline_status(bad), 'FAIL')
+
     def test_gateway_evidence_decides_the_failure_mode(self):
         rows = self.rows()
         index = self.index(rows)

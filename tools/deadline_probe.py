@@ -275,7 +275,10 @@ def classify(row: dict) -> str:
 
 def case_passes(row: dict, case: dict) -> bool:
     try:
-        if row.get('id') != case['id'] or row.get('process_listener_owned') is not True:
+        # Bind the row's own metadata too: id and phase identify which case these
+        # observations belong to, so neither may drift from the contract.
+        if (row.get('id') != case['id'] or row.get('phase') != case['phase']
+                or row.get('process_listener_owned') is not True):
             return False
         if type(row['http_status']) is not int or type(row['elapsed_ms']) not in (int, float):
             return False
