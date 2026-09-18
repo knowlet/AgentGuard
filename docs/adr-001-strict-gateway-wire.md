@@ -14,6 +14,8 @@ Pass 必須只有非空 reason。Reject 必須有 reason、string body、整數 
 
 相容性變更是刻意的：省略/null/空白 reason、200 reject、額外 keys、空 mask 均不接受。既有寬鬆的第三方 webhook 必須先更新 serializer；不能用 failOpen 恢復相容性。受保護配置必須使用 failureMode=failClosed、enforce 而非 shadow/audit。沒有宣稱任意使用此 binary 的 route 都被保護。
 
+HTTP webhook 外層必須回 200；非 200 即使 body 是合法 Pass 仍拒絕。這與 action.status_code（對 client 的拒絕狀態）是不同層級。
+
 ## 驗收
 
 原版 suite 保持漏洞診斷。patched suite 使用原來 42 個 phase cases（不再跟隨 stock_source_expectation 的 unscored），另加 32 個 phase cases，包括 null body/status、duplicate Unicode key、混合分支、未知巢狀欄位、trailing JSON、超長 reason。另有 6 個合法 controls 與 8 個 HTTP/非 JSON/斷線/截斷故障案例。Request 拒絕要求 upstream=0；response 拒絕要求 upstream=1 且沒有 body marker；mask controls 檢查目標改寫與非目標結構保留。
@@ -36,3 +38,9 @@ python3 -m tools.prepare_wire_harness --source /path/to/upstream --output /tmp/w
 ```
 
 完整 build、manifest 綁定、原生/Compose E2E 的可重現步驟在 `.github/workflows/p0-patched.yml`。實際 PASS/FAIL 以該 commit 的 CI artifact 為準，不以本 ADR 的文字當測試證據。
+
+## 建置與回歸修正
+
+首次 run 35295990036 的 5 項 Serde tests 與完整 cargo build 成功，但採用 no-default-features 後，Linux app 固定選擇 Jemalloc 的啟動邏輯沒有對應 malloc_conf，啟動報 profiling unavailable。這不是 parser gate 的 PASS。本 PR 改用上游預設 build features，將 features 與 rustc 納入 manifest；沒有修改 allocator 原始碼。
+
+HTTP 500 fixture 以合法 allow JSON 當 body，避免因壞 JSON 才被擋下的假證明。Acceptance evaluator 核對所有預註冊 case ID/phase，重新依 upstream/hook/status/marker/結構觀察計算，不只讀取 assertion_passed flag。CI 明確指定 bash，以 pipefail 避免 tee 隱藏錯誤。Compose JSON、config 和 process log 另複製至 artifact；完整 patch 包含新增 decoder 檔案。
