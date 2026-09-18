@@ -18,7 +18,7 @@ HTTP webhook 外層必須回 200；非 200 即使 body 是合法 Pass 仍拒絕�
 
 ## 驗收
 
-原版 suite 保持漏洞診斷。patched suite 使用原來 42 個 phase cases（不再跟隨 stock_source_expectation 的 unscored），另加 32 個 phase cases，包括 null body/status、duplicate Unicode key、混合分支、未知巢狀欄位、trailing JSON、超長 reason。另有 6 個合法 controls 與 8 個 HTTP/非 JSON/斷線/截斷故障案例。Request 拒絕要求 upstream=0；response 拒絕要求 upstream=1 且沒有 body marker；mask controls 檢查目標改寫與非目標結構保留。
+原版 suite 保持漏洞診斷。patched suite 使用原來 42 個 phase cases（不再跟隨 stock_source_expectation 的 unscored），另加 42 個 phase cases，包括 null body/status、duplicate Unicode key、混合分支、未知巢狀欄位、trailing JSON、超長 reason。另有 6 個合法 controls 與 8 個 HTTP/非 JSON/斷線/截斷故障案例。Request 拒絕要求 upstream=0；response 拒絕要求 upstream=1 且沒有 body marker；mask controls 檢查目標改寫與非目標結構保留。
 
 Serde harness 使用實際 patched action/envelope 程式碼，但 Message/ResponseChoice 是形狀相同的 stand-ins，因此只算 Serde contract。完整 cargo build 加真實 Gateway HTTP E2E 才是產品 wire evidence。CI 附 source/config/decoder/installer/binary/lock digests，並上傳 raw artifacts。build manifest 是可信 CI 輸入，不是簽章或防偽機制，不能讓任意呼叫端自填 hash 當部署授權。
 
@@ -44,3 +44,5 @@ python3 -m tools.prepare_wire_harness --source /path/to/upstream --output /tmp/w
 首次 run 35295990036 的 5 項 Serde tests 與完整 cargo build 成功，但採用 no-default-features 後，Linux app 固定選擇 Jemalloc 的啟動邏輯沒有對應 malloc_conf，啟動報 profiling unavailable。這不是 parser gate 的 PASS。本 PR 改用上游預設 build features，將 features 與 rustc 納入 manifest；沒有修改 allocator 原始碼。
 
 HTTP 500 fixture 以合法 allow JSON 當 body，避免因壞 JSON 才被擋下的假證明。Acceptance evaluator 核對所有預註冊 case ID/phase，重新依 upstream/hook/status/marker/結構觀察計算，不只讀取 assertion_passed flag。CI 明確指定 bash，以 pipefail 避免 tee 隱藏錯誤。Compose JSON、config 和 process log 另複製至 artifact；完整 patch 包含新增 decoder 檔案。
+
+陣列不能代替物件：加入 Object<T> wrapper，以 deserialize_map 與 MapAccessDeserializer 保留 map stream，不先轉 Value；envelope/messages/choices/message 都要求真正 JSON object，避免 serde struct 的 sequence 表示。新增 10 個 phase cases，總計 84 個負向案例。Malformed JSON 的詳細錯誤在 Gateway hook 邊界轉成固定 AG_WIRE_INVALID_RESPONSE，避免未知欄位名稱或非法值進一般日誌。

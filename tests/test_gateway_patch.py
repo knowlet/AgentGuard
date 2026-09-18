@@ -37,7 +37,7 @@ class GatewayPatchTests(unittest.TestCase):
         cases = negative_cases()
         self.assertEqual(len(cases), 22 + len(EXTRA_ACTIONS) + len(EXTRA_ENVELOPES))
         self.assertEqual(len({c['id'] for c in cases}), len(cases))
-        self.assertEqual(sum(len(c['phases']) for c in cases), 74)
+        self.assertEqual(sum(len(c['phases']) for c in cases), 84)
 
     def test_empty_or_partial_results_never_pass(self):
         self.assertEqual(acceptance_status([], [], []), 'FAIL')

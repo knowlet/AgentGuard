@@ -26,6 +26,8 @@ def patched_source(raw: bytes) -> bytes:
         if text.count(old) != 1:
             raise ValueError('missing exact envelope patch anchor')
         text = text.replace(old, new)
+        text = text.replace('#[derive(Debug, Clone, Serialize, Deserialize)]\n' + new,
+                            '#[derive(Debug, Clone, Serialize)]\n' + new)
     for action in ('RequestAction', 'ResponseAction'):
         old = '#[derive(Debug, Clone, Serialize, Deserialize)]\n#[serde(untagged, rename_all = "snake_case")]\npub enum ' + action
         new = '#[derive(Debug, Clone, Serialize)]\n#[serde(untagged, rename_all = "snake_case")]\npub enum ' + action
@@ -37,7 +39,9 @@ def patched_source(raw: bytes) -> bytes:
     if text.count(anchor) != 2:
         raise ValueError('missing exact transport patch anchors')
     text = text.replace(anchor, '\tif res.status() != ::http::StatusCode::OK {\n'
-                        '\t\treturn Err(anyhow::anyhow!("AG_WIRE_HTTP_STATUS"));\n\t}\n' + anchor)
+                        '\t\treturn Err(anyhow::anyhow!("AG_WIRE_HTTP_STATUS"));\n\t}\n'
+                        '\tlet parsed = json::from_response_body(res).await\n'
+                        '\t\t.map_err(|_| anyhow::anyhow!("AG_WIRE_INVALID_RESPONSE"))?;')
     text += '\n#[path = "agentguard_strict_wire.rs"]\nmod agentguard_strict_wire;\n'
     for action, phase in (('RequestAction', 'Request'), ('ResponseAction', 'Response')):
         text += '''
@@ -59,6 +63,19 @@ impl<'de> Deserialize<'de> for ACTION {
     }
 }
 '''.replace('ACTION', action).replace('PHASE', phase)
+    for name, action in (('GuardrailsPromptResponse', 'RequestAction'),
+                         ('GuardrailsResponseResponse', 'ResponseAction')):
+        text += """
+impl<'de> Deserialize<'de> for ENVELOPE {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct WireEnvelope { action: ACTION }
+        let envelope = agentguard_strict_wire::Object::<WireEnvelope>::deserialize(d)?;
+        Ok(Self { action: envelope.0.action })
+    }
+}
+""".replace('ENVELOPE', name).replace('ACTION', action)
     return text.encode('utf-8')
 
 

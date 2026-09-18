@@ -5,6 +5,26 @@ use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::fmt;
 
+/// Require JSON object syntax while preserving the original map stream, including duplicates.
+/// Converting to serde_json::Value here would silently collapse duplicate keys.
+#[derive(Debug, Serialize)]
+#[serde(transparent)]
+pub struct Object<T>(pub T);
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Object<T> {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct ObjectVisitor<T>(std::marker::PhantomData<T>);
+        impl<'de, T: Deserialize<'de>> Visitor<'de> for ObjectVisitor<T> {
+            type Value = Object<T>;
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result { f.write_str("a JSON object") }
+            fn visit_map<M: MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
+                T::deserialize(serde::de::value::MapAccessDeserializer::new(map)).map(Object)
+            }
+        }
+        d.deserialize_map(ObjectVisitor(std::marker::PhantomData))
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Message {
@@ -15,26 +35,26 @@ pub struct Message {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Choice {
-    pub message: Message,
+    pub message: Object<Message>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Messages {
-    pub messages: Vec<Message>,
+    pub messages: Vec<Object<Message>>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Choices {
-    pub choices: Vec<Choice>,
+    pub choices: Vec<Object<Choice>>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum MaskBody {
-    Request(Messages),
-    Response(Choices),
+    Request(Object<Messages>),
+    Response(Object<Choices>),
 }
 
 #[derive(Deserialize)]
@@ -106,8 +126,8 @@ impl<'de> Deserialize<'de> for Action {
                     }
                     (Some(Body::Mask(body)), None) => {
                         let len = match &body {
-                            MaskBody::Request(x) => x.messages.len(),
-                            MaskBody::Response(x) => x.choices.len(),
+                            MaskBody::Request(x) => x.0.messages.len(),
+                            MaskBody::Response(x) => x.0.choices.len(),
                         };
                         if len == 0 || len > 1024 {
                             return Err(de::Error::custom("AG_WIRE_INVALID_MASK_LENGTH"));
@@ -145,18 +165,18 @@ mod tests {
     fn pass_and_reject_controls() {
         for raw in [r#"{"action":{"reason":"ALLOW"}}"#,
                     r#"{"action":{"body":"Blocked","reason":"DENY","status_code":403}}"#] {
-            assert!(serde_json::from_str::<RequestEnvelope>(raw).is_ok());
-            assert!(serde_json::from_str::<ResponseEnvelope>(raw).is_ok());
+            assert!(serde_json::from_str::<Object<RequestEnvelope>>(raw).is_ok());
+            assert!(serde_json::from_str::<Object<ResponseEnvelope>>(raw).is_ok());
         }
     }
     #[test]
     fn masks_are_directional_and_nonempty() {
         let req = r#"{"action":{"reason":"MASK","body":{"messages":[{"role":"user","content":"safe"}]}}}"#;
         let resp = r#"{"action":{"reason":"MASK","body":{"choices":[{"message":{"role":"assistant","content":"safe"}}]}}}"#;
-        assert!(matches!(serde_json::from_str::<RequestEnvelope>(req).unwrap().action, Action::Mask { .. }));
-        assert!(matches!(serde_json::from_str::<ResponseEnvelope>(resp).unwrap().action, Action::Mask { .. }));
-        assert!(serde_json::from_str::<ResponseEnvelope>(req).is_err());
-        assert!(serde_json::from_str::<RequestEnvelope>(resp).is_err());
+        assert!(matches!(serde_json::from_str::<Object<RequestEnvelope>>(req).unwrap().0.action, Action::Mask { .. }));
+        assert!(matches!(serde_json::from_str::<Object<ResponseEnvelope>>(resp).unwrap().0.action, Action::Mask { .. }));
+        assert!(serde_json::from_str::<Object<ResponseEnvelope>>(req).is_err());
+        assert!(serde_json::from_str::<Object<RequestEnvelope>>(resp).is_err());
     }
     #[test]
     fn malformed_actions_never_become_pass() {
@@ -180,8 +200,21 @@ mod tests {
             r#"{"reason":"OK","body":{"messages":[{"role":"user","content":"x"}]},"status_code":403}"#];
         for action in actions {
             let raw = format!("{{\"action\":{action}}}");
-            assert!(serde_json::from_str::<RequestEnvelope>(&raw).is_err(), "{action}");
-            assert!(serde_json::from_str::<ResponseEnvelope>(&raw).is_err(), "{action}");
+            assert!(serde_json::from_str::<Object<RequestEnvelope>>(&raw).is_err(), "{action}");
+            assert!(serde_json::from_str::<Object<ResponseEnvelope>>(&raw).is_err(), "{action}");
+        }
+    }
+    #[test]
+    fn arrays_cannot_impersonate_structs() {
+        for raw in [
+            r#"[{"reason":"OK"}]"#,
+            r#"{"action":{"reason":"MASK","body":[[{"role":"user","content":"x"}]]}}"#,
+            r#"{"action":{"reason":"MASK","body":{"messages":[["user","x"]]}}}"#,
+            r#"{"action":{"reason":"MASK","body":{"choices":[[{"role":"assistant","content":"x"}]]}}}"#,
+            r#"{"action":{"reason":"MASK","body":{"choices":[{"message":["assistant","x"]}]}}}"#,
+        ] {
+            assert!(serde_json::from_str::<Object<RequestEnvelope>>(raw).is_err());
+            assert!(serde_json::from_str::<Object<ResponseEnvelope>>(raw).is_err());
         }
     }
     #[test]
@@ -189,8 +222,8 @@ mod tests {
         for raw in [r#"{"action":{"reason":"OK"},"action":{"reason":"OK"}}"#,
                     r#"{"action":{"reason":"OK"},"extra":1}"#,
                     r#"{"action":{"reason":"OK"}} {}"#] {
-            assert!(serde_json::from_str::<RequestEnvelope>(raw).is_err());
-            assert!(serde_json::from_str::<ResponseEnvelope>(raw).is_err());
+            assert!(serde_json::from_str::<Object<RequestEnvelope>>(raw).is_err());
+            assert!(serde_json::from_str::<Object<ResponseEnvelope>>(raw).is_err());
         }
     }
 }

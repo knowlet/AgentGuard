@@ -43,7 +43,8 @@ pub struct ResponseChoice { pub message: Message }
 '''
     (out / 'src/lib.rs').write_text(prelude + text[start:end] + addon + test)
     shutil.copyfile(source / WEBHOOK_PATH.replace('webhook.rs', 'agentguard_strict_wire.rs'), out / 'src/agentguard_strict_wire.rs')
-    shutil.copyfile(ROOT / 'tests/fixtures/webhook-negative.json', out / 'negative.json')
+    from tools.gateway_acceptance import negative_cases
+    (out / 'negative.json').write_text(json.dumps({'cases': negative_cases()}))
     packages = tomllib.loads((source / 'Cargo.lock').read_text())['package']
     versions = {name: next(x['version'] for x in packages if x['name'] == name) for name in ('serde', 'serde_json')}
     (out / 'Cargo.toml').write_text('[package]\nname="agentguard-wire-contract"\nversion="0.0.0"\nedition="2021"\n[dependencies]\n'

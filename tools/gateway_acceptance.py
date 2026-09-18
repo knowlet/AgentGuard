@@ -30,12 +30,17 @@ EXTRA_ACTIONS = (
     '{"reason":"DENY","body":"x","status_code":600}',
     '{"reason":"ALLOW","re\\u0061son":"ALLOW"}',
     '{"reason":"   "}',
+    '{"reason":"MASK","body":[[{"role":"user","content":"x"}]]}',
+    '{"reason":"MASK","body":{"messages":[["user","x"]]}}',
+    '{"reason":"MASK","body":{"choices":[[{"role":"assistant","content":"x"}]]}}',
+    '{"reason":"MASK","body":{"choices":[{"message":["assistant","x"]}]}}',
     '{"reason":"MASK","body":{"messages":[],"choices":[]}}',
     '{"reason":"MASK","body":{"messages":[{"role":"user","content":"x","content":"y"}]}}',
     '{"reason":"MASK","body":{"choices":[{"message":{"role":"assistant","content":"x","extra":1}}]}}',
     '{"reason":"MASK","body":{"messages":[{"role":"user","content":"x"}]},"status_code":403}',
 )
 EXTRA_ENVELOPES = (
+    '[{"reason":"ALLOW"}]',
     '{"action":{"reason":"ALLOW"},"action":{"reason":"ALLOW"}}',
     '{"action":{"reason":"ALLOW"}} {}',
     '{"action":{"reason":"' + 'x' * 513 + '"}}',
