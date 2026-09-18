@@ -1,0 +1,63 @@
+name: p0-stock-diagnostic
+on:
+  pull_request:
+  push:
+    branches: [develop]
+permissions:
+  contents: read
+jobs:
+  real-gateway-diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      COMPOSE_PROJECT_NAME: agentguard-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout exact event commit
+        env:
+          REPOSITORY: ${{ github.repository }}
+          COMMIT: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          AUTH=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          echo "::add-mask::$AUTH"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $AUTH" \
+          GIT_TERMINAL_PROMPT=0 git fetch --depth=1 origin "$COMMIT"
+          unset AUTH GH_TOKEN
+          git checkout --detach FETCH_HEAD
+      - name: Unit and fixture tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Fetch checksum-pinned stock Gateway
+        run: python3 -m tools.fetch_gateway --output "$RUNNER_TEMP/agentgateway"
+      - name: Reproduce stock wire behavior (NOT a protected gate)
+        run: python3 -m tools.gateway_probe --gateway-bin "$RUNNER_TEMP/agentgateway" --report reports/gateway-stock.json
+      - name: Validate and run isolated Compose diagnostic
+        run: |
+          docker compose -f deploy/compose/compose.yaml --profile cpu-e2e config --quiet
+          docker compose -f deploy/compose/compose.yaml --profile cpu-e2e run --build --rm diagnostic
+      - name: Verify evidence survives removal of diagnostic container
+        run: |
+          docker compose -f deploy/compose/compose.yaml --profile cpu-e2e run --rm --entrypoint python diagnostic -c '
+          import json
+          from pathlib import Path
+          report = json.loads(Path("/evidence/gateway-stock.json").read_text())
+          assert report["diagnostic_status"] == "VULNERABILITY_REPRODUCED"
+          assert report["protected_wire_gate"] == "FAIL"
+          assert len(report["controls"]) == 6 and all(r["assertion_passed"] for r in report["controls"])
+          assert len(report["negative_cases"]) == 42
+          assert report["unscored_negative_cases"] == 4
+          assert Path("/evidence/gateway-stock.gateway.log").stat().st_size > 0
+          print("PERSISTED_EVIDENCE_VERIFIED: diagnostic reproduced; protected FAIL")
+          '
+      - name: Preserve diagnostic evidence in job log
+        if: always()
+        run: |
+          for f in reports/gateway-stock.json reports/gateway-stock.gateway.log; do
+            if [ -f "$f" ]; then
+              printf '\n=== %s ===\n' "$f"
+              cat "$f"
+            fi
+          done

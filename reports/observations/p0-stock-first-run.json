@@ -1,0 +1,30 @@
+{
+  "kind": "MANUALLY_EXTRACTED_CI_OBSERVATION_NOT_RAW_REPORT",
+  "run_url": "https://github.com/knowlet/AgentGuard/actions/runs/35241125364",
+  "job_url": "https://github.com/knowlet/AgentGuard/actions/runs/35241125364/job/105269530431",
+  "head_commit": "48966f9c7d141286e880877844a6078690bb0ef2",
+  "event_merge_commit": "f724cfe8734a0b701147c66e782afc525891af51",
+  "observed_date": "2026-09-17",
+  "unit_tests_passed": 48,
+  "gateway_version": "v1.5.0",
+  "binary_sha256": "daca5cda76e8c5ab0c1a75912fecf2d6365095403f810db72029c49d14a37e7b",
+  "config_sha256": "ef6be0ce0ed790e9aeb10d21cc855436dd818792375e6fa01baf5f0f584468cb",
+  "fixtures_sha256": "edd41ce208c96f7a831afedb5661c306e93fe7c7c0df0f31d1cff0c6508991eb",
+  "runner_sha256": "9349804b1ab9d8005144fe6205933786f83718ae09a8e0232e22bc3daf072563",
+  "legal_controls_passed": 6,
+  "negative_phase_cases_observed": 42,
+  "confirmed_fail_open_cases": ["empty_action", "typo_status", "string_status", "invalid_mask_body"],
+  "request_observation": {"http_status": 200, "upstream_calls": 1},
+  "response_observation": {"http_status": 200, "upstream_calls": 1, "client_marker_visible": true},
+  "diagnostic_violations": [],
+  "diagnostic_status": "VULNERABILITY_REPRODUCED",
+  "protected_wire_gate": "FAIL",
+  "p0_release_gate": "NOT_EVALUATED",
+  "asr_fpr": "NOT_EVALUATED",
+  "limitations": [
+    "Summary extracted from actual workflow job log, not complete raw observations",
+    "42 executed cases do not mean 42 protection passes",
+    "Superseded runner requires a new CI run",
+    "No Compose or patched Gateway result in this first run"
+  ]
+}
