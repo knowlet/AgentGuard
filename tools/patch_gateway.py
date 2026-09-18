@@ -14,6 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE_REVISION = 'fe6732474a96a0363dfb9822859af4e9bab360fa'
 WEBHOOK = Path('crates/agentgateway/src/llm/policy/webhook.rs')
 WEBHOOK_BLOB = 'b6a9e64f7d541ffecb76eebb384e4308178d0fde'
+WEBHOOK_SHA256 = 'bb4cfcb9a9f820f977f81c6131785a2d178d8c04e629566e360254a10ff496d4'
+PATCHED_WEBHOOK_SHA256 = 'c5d08d3debf6829aa37b987e4238d8564406ede60fd6e25fd445b043674e14f2'
 MODULE = ROOT / 'patches/agentgateway/strict_action.rs'
 FIXTURES = ROOT / 'tests/fixtures/webhook-negative.json'
 
@@ -24,7 +26,7 @@ def sha256(data: bytes) -> str:
 
 def patched_source(raw: bytes) -> bytes:
     git_hash = hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest()
-    if git_hash != WEBHOOK_BLOB:
+    if git_hash != WEBHOOK_BLOB or sha256(raw) != WEBHOOK_SHA256:
         raise ValueError('UPSTREAM_SOURCE_MISMATCH: refusing unreviewed or already patched source')
     text = raw.decode('utf-8')
     for kind, name in [('struct', 'GuardrailsPromptResponse'), ('struct', 'GuardrailsResponseResponse'),
@@ -34,7 +36,17 @@ def patched_source(raw: bytes) -> bytes:
         text, n = re.subn(pattern, r'#[derive(Debug, Clone, Serialize)]\1', text)
         if n != 1:
             raise ValueError('PATCH_ANCHOR_MISMATCH: ' + name)
-    return ('mod strict_action;\n\n' + text).encode()
+    anchor = '\tlet parsed = json::from_response_body(res).await?;'
+    if text.count(anchor) != 2:
+        raise ValueError('HTTP_STATUS_PATCH_ANCHOR_MISMATCH')
+    text = text.replace(anchor,
+        '\tif res.status() != ::http::StatusCode::OK {\n'
+        '\t\tanyhow::bail!("non-200 response from prompt guard webhook");\n'
+        '\t}\n' + anchor)
+    changed = ('mod strict_action;\n\n' + text).encode()
+    if sha256(changed) != PATCHED_WEBHOOK_SHA256:
+        raise ValueError('PATCH_OUTPUT_PIN_MISMATCH')
+    return changed
 
 
 def apply(upstream: Path) -> dict:

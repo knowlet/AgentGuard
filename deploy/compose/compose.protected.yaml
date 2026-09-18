@@ -1,0 +1,25 @@
+services:
+  protected:
+    platform: linux/amd64
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile.protected
+    command:
+      - --trusted-manifest-sha256
+      - ${TRUSTED_BUILD_MANIFEST_SHA256:?Supply the digest from an authenticated build or release catalog}
+    network_mode: none
+    read_only: true
+    volumes:
+      - protected-evidence:/evidence
+    tmpfs:
+      # Diagnostic-only execution of a private copy of verified Gateway bytes.
+      - /tmp:rw,exec,nosuid,nodev,size=512m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 2g
+    cpus: 2
+    environment:
+      PYTHONDONTWRITEBYTECODE: '1'
+volumes:
+  protected-evidence: {}

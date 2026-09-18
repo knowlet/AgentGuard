@@ -1,0 +1,12 @@
+# Functional CPU acceptance image, not a production Gateway distribution.
+ARG PYTHON_IMAGE=python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
+FROM ${PYTHON_IMAGE}
+WORKDIR /app
+COPY tools/ tools/
+COPY patches/ patches/
+COPY tests/fixtures/ tests/fixtures/
+COPY build/agentgateway /opt/gateway/agentgateway
+COPY build/manifest.json /opt/gateway/manifest.json
+RUN mkdir /evidence && chown 65532:65532 /evidence
+USER 65532:65532
+ENTRYPOINT ["python", "-m", "tools.protected_gateway_probe", "--gateway-bin", "/opt/gateway/agentgateway", "--build-manifest", "/opt/gateway/manifest.json", "--report", "/evidence/gateway-protected.json"]

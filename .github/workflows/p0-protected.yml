@@ -2,16 +2,19 @@ name: p0-protected
 on:
   pull_request:
     branches: [develop]
+    paths: ['.github/workflows/p0-protected.yml', 'patches/**', 'tools/**', 'tests/**', 'agentguard/**', 'deploy/compose/**']
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: p0-protected-${{ github.event.pull_request.number || github.ref }}
+  group: p0-protected-acceptance-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 jobs:
-  inputs:
+  build-and-accept:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      COMPOSE_PROJECT_NAME: agentguard-protected-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Checkout exact event commit without persistent credentials
         env:
@@ -29,6 +32,8 @@ jobs:
           GIT_TERMINAL_PROMPT=0 git fetch --depth=1 origin "$COMMIT"
           unset AUTH GH_TOKEN
           git checkout --detach FETCH_HEAD
+      - name: Unit and regression tests
+        run: python3 -m unittest discover -s tests -v
       - name: Preserve exact build inputs (not a security PASS)
         run: |
           mkdir -p "$RUNNER_TEMP/inputs"
@@ -84,6 +89,35 @@ jobs:
           print(json.dumps(manifest, indent=2))
           PY
           sha256sum build/manifest.json > build/manifest.sha256
+          echo "TRUSTED_BUILD_MANIFEST_SHA256=$(sha256sum build/manifest.json | cut -d' ' -f1)" >> "$GITHUB_ENV"
+      - name: Native protected wire acceptance
+        run: |
+          python3 -m tools.protected_gateway_probe --gateway-bin build/agentgateway --build-manifest build/manifest.json --trusted-manifest-sha256 "$TRUSTED_BUILD_MANIFEST_SHA256" --report reports/gateway-protected.json
+      - name: Isolated Compose protected acceptance
+        run: |
+          docker compose -f deploy/compose/compose.protected.yaml config --quiet
+          docker compose -f deploy/compose/compose.protected.yaml run --build --rm protected
+      - name: Verify persisted protected evidence after container removal
+        run: |
+          docker compose -f deploy/compose/compose.protected.yaml run --rm --entrypoint python protected -c '
+          import json
+          from pathlib import Path
+          r = json.loads(Path("/evidence/gateway-protected.json").read_text())
+          assert r["wire_acceptance"] == "PASS"
+          assert len(r["controls"]) == 6 and len(r["negative_cases"]) == 72 and len(r["fault_cases"]) == 6
+          assert r["p0_release_gate"] == "NOT_EVALUATED"
+          assert Path("/evidence/gateway-protected.gateway.log").stat().st_size > 0
+          assert len(Path("/evidence/gateway-protected.observations.jsonl").read_text().splitlines()) == 84
+          print("PERSISTED_PROTECTED_WIRE_EVIDENCE_VERIFIED; full P0 NOT_EVALUATED")
+          '
+      - name: Export Compose evidence, including failure observations
+        if: always() && env.TRUSTED_BUILD_MANIFEST_SHA256 != ''
+        run: |
+          docker compose -f deploy/compose/compose.protected.yaml run --rm --entrypoint python protected -c '
+          import sys, tarfile
+          with tarfile.open(fileobj=sys.stdout.buffer, mode="w|") as t:
+              t.add("/evidence", arcname="compose")
+          ' > reports/compose-evidence.tar
       - name: Preserve build outputs and failure logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
