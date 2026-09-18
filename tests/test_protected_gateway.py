@@ -69,6 +69,9 @@ class BuildBindingTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'STOCK_BUILD'):
                 self.check()
 
+    def test_pinned_dev_allocator_environment(self):
+        self.assertEqual(probe.RUNTIME_ENV, {'RUST_LOG': 'info', '_RJEM_MALLOC_CONF': 'prof:true'})
+
     def test_bounded_manifest(self):
         raw = b'x'*16385
         with self.assertRaisesRegex(ValueError, 'SIZE'):

@@ -28,6 +28,9 @@ from tools import patch_gateway as patch
 ROOT = Path(__file__).resolve().parents[1]
 SHA = re.compile(r'[0-9a-f]{64}')
 FAULTS = ('http_500_allow', 'disconnect', 'timeout_allow')
+# GNU dev builds omit upstream's feature-gated malloc_conf export but still
+# select pprof-alloc's jemalloc globally. Enable profiling before initialization.
+RUNTIME_ENV = {'RUST_LOG': 'info', '_RJEM_MALLOC_CONF': 'prof:true'}
 EXTRA = ROOT / 'tests/fixtures/webhook-strict-extra.json'
 
 
@@ -240,7 +243,7 @@ def run(binary: Path, manifest_path: Path, trusted_hash: str, report_path: Path)
         with report_path.with_suffix('.gateway.log').open('w') as log:
             process = subprocess.Popen([str(executable), '-f', str(config_path)], shell=False,
                 stdout=log, stderr=subprocess.STDOUT,
-                env={'PATH': os.environ.get('PATH', ''), 'HOME': directory, 'RUST_LOG': 'info'})
+                env={'PATH': os.environ.get('PATH', ''), 'HOME': directory, **RUNTIME_ENV})
             try:
                 deadline = time.monotonic() + 20
                 while True:
@@ -287,6 +290,7 @@ def run(binary: Path, manifest_path: Path, trusted_hash: str, report_path: Path)
               'trusted_manifest_sha256': trusted_hash, 'config_sha256': patch.sha256(config),
               'runner_sha256': patch.sha256(Path(__file__).read_bytes()),
               'stock_helper_sha256': patch.sha256(Path(stock.__file__).read_bytes()),
+              'runtime_environment': dict(RUNTIME_ENV),
               'extra_fixtures_sha256': patch.sha256(EXTRA.read_bytes()),
               'controls': controls, 'negative_cases': negatives, 'fault_cases': faults,
               'wire_acceptance': 'PASS' if passed else 'FAIL',
