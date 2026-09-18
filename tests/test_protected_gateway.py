@@ -1,9 +1,11 @@
 """Helpers are unit-tested with synthetic records, not claimed as Gateway E2E."""
-import copy
 import hashlib
 import json
 from pathlib import Path
 import unittest
+import subprocess
+import sys
+import tempfile
 from unittest.mock import patch as mock_patch
 
 from tools import patch_gateway as patcher
@@ -125,9 +127,53 @@ class AcceptanceTests(unittest.TestCase):
             self.assertFalse(probe.stock.rejected_without_leak(dict(row, **change)))
 
     def test_runtime_context_or_full_p0_are_not_reported_as_pass(self):
-        source = Path(probe.__file__).read_text()
-        for gate in ('G0-CONTEXT','G0-COVERAGE','G0-DEADLINE'):
-            self.assertIn("'"+gate+"': 'NOT_EVALUATED'", source)
+        # Exercise run() and the written JSON, with only process/HTTP/build
+        # dependencies replaced. These synthetic observations are NOT E2E evidence.
+        def observation(_url, _state, phase, action, raw=''):
+            blocked = action in ('deny', 'raw') + probe.FAULTS
+            upstream = 0 if phase == 'request' and blocked else 1
+            return {'phase': phase,
+                    'http_status': 403 if action == 'deny' else 503 if blocked else 200,
+                    'counts': {'request': 1, 'response': 1 if upstream else 0, 'upstream': upstream},
+                    'client_marker_visible': phase == 'response' and action == 'allow',
+                    'upstream_received_marker': not (phase == 'request' and action == 'mask'),
+                    'request_structure_preserved': True, 'response_structure_preserved': True,
+                    'availability_fault': action in probe.FAULTS, 'elapsed_ms': 1.0}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binary, manifest, report = root/'binary', root/'manifest.json', root/'report.json'
+            binary.write_bytes(b'unit-test-only')
+            manifest.write_text('{}')
+            with mock_patch.object(probe, 'validate_build', return_value={'kind': 'unit-only'}), \
+                 mock_patch.object(probe, 'fixtures') as fixture, \
+                 mock_patch.object(probe.socket, 'create_connection'), \
+                 mock_patch.object(probe.subprocess, 'Popen') as process, \
+                 mock_patch.object(probe, 'observe', side_effect=observation), \
+                 mock_patch('sys.stdout'):
+                fixture.return_value.__enter__.return_value = (object(), 32123)
+                process.return_value.poll.return_value = None
+                self.assertEqual(probe.run(binary, manifest, 'a'*64, report), 0)
+            actual = json.loads(report.read_text())
+            self.assertEqual(actual['wire_acceptance'], 'PASS')
+            for gate in ('p0_release_gate', 'asr_fpr', 'G0-CONTEXT', 'G0-COVERAGE', 'G0-DEADLINE'):
+                self.assertEqual(actual[gate], 'NOT_EVALUATED')
+            self.assertEqual(len(actual['negative_cases']), 72)
+            self.assertEqual(len(report.with_suffix('.observations.jsonl').read_text().splitlines()), 84)
+
+    def test_cli_build_identity_failure_cannot_write_pass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root/'binary').write_bytes(b'not-an-executable')
+            (root/'manifest.json').write_text('{}')
+            report = root/'report.json'
+            result = subprocess.run([sys.executable, '-m', 'tools.protected_gateway_probe',
+                '--gateway-bin', str(root/'binary'), '--build-manifest', str(root/'manifest.json'),
+                '--trusted-manifest-sha256', 'a'*64, '--report', str(report)],
+                cwd=probe.ROOT, capture_output=True, text=True, timeout=10, check=False)
+            self.assertEqual(result.returncode, 2)
+            actual = json.loads(report.read_text())
+            self.assertEqual(actual['wire_acceptance'], 'ERROR')
+            self.assertEqual(actual['p0_release_gate'], 'NOT_EVALUATED')
 
 
 class PatchSafetyTests(unittest.TestCase):
