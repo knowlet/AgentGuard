@@ -25,8 +25,10 @@ v1.5.0 對 webhook backend 插入 10 秒 `BackendRequestTimeout` [S25]。那是*
 | 預算內 | inside_budget request／response（1,200 ms） | HTTP 200；兩筆決策依序為已送達的 request allow 與 response allow；上游 1 次；結構與 marker 符合；Gateway log 沒有 timeout／transport／reject marker |
 | 邊界內 | at_budget_boundary_request（= 1,500 ms） | 花完預算仍算在預算內（比較為嚴格大於） |
 | 超預算 | just_over_budget request／response（1,501 ms）、over_budget_request（4,000 ms） | HTTP 503 加固定 body；slow decision 已送達且為 `GUARD_DEADLINE_EXCEEDED`；elapsed < 9,000 ms；Gateway log 必須是該 phase 的 `"action": "reject"`，且不得出現 timeout／transport marker |
-| Gateway 逾時 | unbounded_stage request／response（11,000 ms） | HTTP 503；slow decision **未送達**（`decision_write=failed`）；Gateway log 必須是該 phase 的 `upstream call timeout`，且不得出現 transport marker |
-| 提前斷線（負向 control） | early_disconnect_request（9,000 ms 後關閉連線） | HTTP 503；slow decision 未送達且 `decision_write=not_attempted`；Gateway log 必須是該 phase 的 `connection closed before message completed`，且**不得**出現 timeout marker |
+| Gateway 逾時 | unbounded_stage request／response（11,000 ms） | HTTP 4xx／5xx（閘門接受 400–599，本 head 實測 503）；slow decision **未送達**（`decision_write=failed`）；Gateway log 必須是該 phase 的 `upstream call timeout`，且不得出現 transport marker |
+| 提前斷線（負向 control） | early_disconnect_request（9,000 ms 後關閉連線） | HTTP 4xx／5xx（本 head 實測 503）；slow decision 未送達且 `decision_write=not_attempted`；Gateway log 必須是該 phase 的 `connection closed before message completed`，且**不得**出現 timeout marker |
+
+超預算列的 HTTP 503 是閘門硬性要求（guard 自己回的 status code），Gateway 故障列的 status 只要求 4xx／5xx，因為那是 Gateway 決定的。
 
 每個 case 的**決策契約**逐筆比對：phase 身分與順序、是否為 slow phase、`allowed`／`reason`／`delivered`／`decision_write` 的型別與值。凡是已走到 response 的 case，前置 request 必須是明確且**已送達的 allow**；只有註冊的 slow phase 可以是 deadline deny 或未送達。決策筆數等於 request／response 的預期呼叫數。
 
