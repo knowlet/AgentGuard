@@ -55,6 +55,6 @@ Readiness 與每次測試前後皆以 Linux `/proc/<pid>/exe`、fd socket inode 
 
 Patch installer 對 decoder、webhook、manifest 全部先 staging，再依序 replace；捕捉寫入失敗後回復已變更檔案，並有逐輸出失敗注入測試。這不是跨檔案 crash-atomic transaction；SIGKILL、掉電或 rollback I/O 本身失敗時，必須丟棄暫存 upstream checkout 重建，不繼續編譯。
 
-建置統一走 `tools.build_gateway`，實際驗證 upstream default features 與 `rustc 1.98.0`，固定 `RUSTUP_TOOLCHAIN=1.98`，不靠搜尋 workflow 裡的一行文字。上游已有 rust-toolchain.toml，因此先前的「必然用了 runner default」推斷不成立；顯式設定用來排除較高優先序 override，並留下可測試的契約。
+建置統一走 `tools.build_gateway`，實際驗證 upstream default features 與 `rustc 1.98.0`，固定 `RUSTUP_TOOLCHAIN=1.98.0`，不靠搜尋 workflow 裡的一行文字。上游已有 rust-toolchain.toml，因此先前的「必然用了 runner default」推斷不成立；顯式設定用來排除較高優先序 override，並留下可測試的契約。
 
 Build 與 acceptance 分成不同 GitHub Actions jobs。Consumer 只下載 `needs.build` 回傳的 artifact ID，manifest SHA-256 由 GitHub job output 傳遞，不從待驗證的本機 manifest 自行重算成信任根；manifest 同時綁完整 fixture、runner、base probe、process/context adapter digests 及固定 84-case 集合。此處僅為同一 PR run 的完整性檢查：PR 作者仍可修改 workflow，沒有 release 簽章／獨立 publisher approval，報告固定 `deployment_approved=false`。不能拿這份 manifest 當 production policy activation 授權。

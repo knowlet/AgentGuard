@@ -76,7 +76,7 @@ def verify_build(binary: Path, manifest: Path) -> tuple[bytes, dict]:
         'installer_sha256': hashlib.sha256((ROOT / 'tools/apply_gateway_patch.py').read_bytes()).hexdigest(),
         'wire_profile': 'normalized-text-v1',
         'suite': suite_binding(),
-        'toolchain': '1.98',
+        'toolchain': '1.98.0',
         'build_features': ['jemalloc', 'mimalloc', 'crypto-aws-lc'],
     }
     if not isinstance(info, dict) or any(info.get(k) != v for k, v in expected.items()):

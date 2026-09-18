@@ -160,7 +160,7 @@ class AcceptanceReview(unittest.TestCase):
             info={'kind':'agentguard-gateway-patch/v1','source_revision':UPSTREAM_REVISION,'upstream_webhook_git_blob':WEBHOOK_BLOB,
                   'decoder_sha256':hashlib.sha256((ROOT/'patches/agentgateway-v1.5.0/strict_wire.rs').read_bytes()).hexdigest(),
                   'installer_sha256':hashlib.sha256((ROOT/'tools/apply_gateway_patch.py').read_bytes()).hexdigest(),
-                  'wire_profile':'normalized-text-v1','toolchain':'1.98','build_features':['jemalloc','mimalloc','crypto-aws-lc'],
+                  'wire_profile':'normalized-text-v1','toolchain':'1.98.0','build_features':['jemalloc','mimalloc','crypto-aws-lc'],
                   'binary_sha256':hashlib.sha256(exe.read_bytes()).hexdigest(),'suite':accept.suite_binding()}
             m.write_text(json.dumps(info)); digest=hashlib.sha256(m.read_bytes()).hexdigest()
             with patch.dict(os.environ,{},clear=True):

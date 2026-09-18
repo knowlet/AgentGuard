@@ -10,7 +10,7 @@ import subprocess
 import tomllib
 from tools.atomic_files import write_set
 
-TOOLCHAIN = '1.98'
+TOOLCHAIN = '1.98.0'
 DEFAULT_FEATURES = ['jemalloc', 'mimalloc', 'crypto-aws-lc']
 ARGV = ['cargo', 'build', '--locked', '-p', 'agentgateway-app', '--bin', 'agentgateway']
 

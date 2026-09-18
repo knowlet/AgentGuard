@@ -19,7 +19,7 @@ jobs:
       artifact_id: ${{ steps.binary-artifact.outputs.artifact-id }}
       manifest_sha256: ${{ steps.reference.outputs.manifest_sha256 }}
     env:
-      RUSTUP_TOOLCHAIN: '1.98'
+      RUSTUP_TOOLCHAIN: '1.98.0'
       CARGO_BUILD_JOBS: 2
       CARGO_PROFILE_DEV_DEBUG: 0
       CARGO_INCREMENTAL: 0
@@ -56,11 +56,11 @@ jobs:
           git -C "$RUNNER_TEMP/upstream" add -N crates/agentgateway/src/llm/policy/agentguard_strict_wire.rs
           git -C "$RUNNER_TEMP/upstream" diff > reports/agentgateway.patch
           cp "$RUNNER_TEMP/upstream/Cargo.lock" reports/upstream-Cargo.lock
-          rustup toolchain install 1.98 --profile minimal
+          rustup toolchain install 1.98.0 --profile minimal
       - name: Native Serde regression tests (not Gateway E2E)
         run: |
           python3 -m tools.prepare_wire_harness --source "$RUNNER_TEMP/upstream" --output "$RUNNER_TEMP/wire-harness"
-          RUSTUP_TOOLCHAIN=1.98 cargo test --manifest-path "$RUNNER_TEMP/wire-harness/Cargo.toml" 2>&1 | tee reports/serde-tests.log
+          RUSTUP_TOOLCHAIN=1.98.0 cargo test --manifest-path "$RUNNER_TEMP/wire-harness/Cargo.toml" 2>&1 | tee reports/serde-tests.log
           cp "$RUNNER_TEMP/wire-harness/Cargo.lock" reports/serde-Cargo.lock
       - name: Compile patched Gateway with verified toolchain and features
         run: |

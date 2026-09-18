@@ -28,7 +28,7 @@ class BuildContract(unittest.TestCase):
         if argv[-1] == 'HEAD' and 'rev-parse' in argv: return p.UPSTREAM_REVISION + '\n'
         if 'diff' in argv: return p.WEBHOOK_PATH + '\n' + p.WEBHOOK_PATH.replace('webhook.rs', 'agentguard_strict_wire.rs') + '\n'
         self.assertEqual(argv, ['rustc', '--version'])
-        self.assertEqual(kwargs['env']['RUSTUP_TOOLCHAIN'], '1.98')
+        self.assertEqual(kwargs['env']['RUSTUP_TOOLCHAIN'], '1.98.0')
         return 'rustc 1.98.0 (test compiler)'
 
     def test_actual_argv_env_and_manifest(self):
@@ -38,7 +38,7 @@ class BuildContract(unittest.TestCase):
                 result = b.build(source, manifest, Path(t) / 'output')
             self.assertEqual(run.call_args.args[0], ['cargo','build','--locked','-p','agentgateway-app','--bin','agentgateway'])
             self.assertFalse(run.call_args.kwargs['shell'])
-            self.assertEqual(run.call_args.kwargs['env']['RUSTUP_TOOLCHAIN'], '1.98')
+            self.assertEqual(run.call_args.kwargs['env']['RUSTUP_TOOLCHAIN'], '1.98.0')
             self.assertEqual(result['build_features'], b.DEFAULT_FEATURES)
             self.assertEqual(result['suite']['phase_cases'], 84)
 

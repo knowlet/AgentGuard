@@ -36,3 +36,10 @@ provider behavior, all endpoint ingress, or complete deadline/audit guarantees.
 Local stock Gateway context observations are diagnostic development evidence.
 Only the exact new CI build's native/Compose artifacts establish its scoped
 results. Full P0, ASR/FPR, and release approval remain unevaluated/unapproved.
+
+## CI toolchain pin correction
+
+Run 35301210454 failed before the Gateway compilation: the minor channel `1.98`
+installed Rust 1.98.1 while the build gate required 1.98.0. The workflow, build
+entrypoint, and manifest now all require the full `1.98.0` pin. The version check
+was not relaxed; the failed run remains evidence of a correctly rejected mismatch.
