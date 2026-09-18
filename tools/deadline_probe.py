@@ -43,7 +43,25 @@ GUARD_DENIAL_BODY = b'Guard deadline exceeded'
 TIMEOUT_MIN_MS = 9000
 TIMEOUT_MAX_MS = 16000
 EXPECTED_CASE_COUNT = 8
-# Frozen registry: (id, slow phase, declared stage latency ms, expected outcome).
+EXPECTED_CLASS = {'allow': 'allow', 'guard_deny': 'guard_deadline_decision',
+                  'gateway_timeout': 'availability_fault'}
+# The GATE's expectation: (id, slow phase, declared stage ms, expected class). It
+# is a separate literal from the runner registry below and is pinned by its own
+# digest, so editing what the runner executes cannot redefine what the gate
+# accepts. Update the digest only as part of a reviewed suite change.
+EXPECTED_CONTRACT = (
+    ('inside_budget_request', 'request', 1200, 'allow'),
+    ('inside_budget_response', 'response', 1200, 'allow'),
+    ('at_budget_boundary_request', 'request', DECLARED_GUARD_BUDGET_MS, 'allow'),
+    ('just_over_budget_request', 'request', DECLARED_GUARD_BUDGET_MS + 1, 'guard_deadline_decision'),
+    ('just_over_budget_response', 'response', DECLARED_GUARD_BUDGET_MS + 1, 'guard_deadline_decision'),
+    ('over_budget_request', 'request', 4000, 'guard_deadline_decision'),
+    ('unbounded_stage_timeout_request', 'request', 11000, 'availability_fault'),
+    ('unbounded_stage_timeout_response', 'response', 11000, 'availability_fault'),
+)
+EXPECTED_CONTRACT_SHA256 = 'e03727dbd72709a05668658a051eda34b9c9b9702cf53c9d30bacae91ea307b4'
+# The RUNNER's registry: the same cases, expressed as the outcomes the fixture
+# reproduces. cases() refuses to run unless it agrees with the contract above.
 REGISTERED_CASES = (
     ('inside_budget_request', 'request', 1200, 'allow'),
     ('inside_budget_response', 'response', 1200, 'allow'),
@@ -54,41 +72,79 @@ REGISTERED_CASES = (
     ('unbounded_stage_timeout_request', 'request', 11000, 'gateway_timeout'),
     ('unbounded_stage_timeout_response', 'response', 11000, 'gateway_timeout'),
 )
-EXPECTED_CLASS = {'allow': 'allow', 'guard_deny': 'guard_deadline_decision',
-                  'gateway_timeout': 'availability_fault'}
+
+
+def contract_digest(contract=None) -> str:
+    # Resolved at call time so patching the module constant is observable.
+    contract = EXPECTED_CONTRACT if contract is None else contract
+    return hashlib.sha256(json.dumps([list(case) for case in contract]).encode()).hexdigest()
+
+
+def contract_matches_pin() -> bool:
+    return contract_digest() == EXPECTED_CONTRACT_SHA256
 
 
 def registered_ids() -> frozenset[str]:
-    return frozenset(case[0] for case in REGISTERED_CASES)
+    return frozenset(case[0] for case in EXPECTED_CONTRACT)
 
 
 def registered_cases() -> list[dict]:
-    """The evaluator's own view of the suite: built from the frozen literals."""
-    return [{'id': i, 'phase': p, 'stage_ms': s, 'outcome': o} for i, p, s, o in REGISTERED_CASES]
+    """The gate's own view of the suite: built from the pinned contract."""
+    return [{'id': i, 'phase': p, 'stage_ms': s, 'expected_class': k} for i, p, s, k in EXPECTED_CONTRACT]
+
+
+def runner_cases() -> list[dict]:
+    return [{'id': i, 'phase': p, 'stage_ms': s, 'outcome': o,
+             'expected_class': EXPECTED_CLASS[o]} for i, p, s, o in REGISTERED_CASES]
+
+
+def registries_agree() -> bool:
+    """Both registries must exist, match the pinned digest and describe one suite."""
+    try:
+        expected, runner = registered_cases(), runner_cases()
+    except (KeyError, TypeError, ValueError):
+        return False
+    if not contract_matches_pin():
+        return False
+    if [c['id'] for c in expected] != [c['id'] for c in runner]:
+        return False
+    return all((e['phase'], e['stage_ms'], e['expected_class']) == (r['phase'], r['stage_ms'], r['expected_class'])
+               for e, r in zip(expected, runner))
+
+
+def _validate_contract(contract) -> None:
+    """Refuse a contract whose declared boundary contradicts its expectation."""
+    ids = [case[0] for case in contract]
+    if len(ids) != EXPECTED_CASE_COUNT or len(set(ids)) != EXPECTED_CASE_COUNT:
+        raise ValueError('DEADLINE_SUITE_CHANGED: review the registered suite before changing its size')
+    for _id, phase, stage_ms, expected_class in contract:
+        if phase not in ('request', 'response') or expected_class not in set(EXPECTED_CLASS.values()):
+            raise ValueError('DEADLINE_CASE_INVALID')
+        if type(stage_ms) is not int or stage_ms < 0:
+            raise ValueError('DEADLINE_CASE_INVALID')
+        if expected_class == 'allow' and over_budget(stage_ms):
+            raise ValueError('DEADLINE_CASE_INVALID')
+        if expected_class == 'guard_deadline_decision' and not over_budget(stage_ms):
+            raise ValueError('DEADLINE_CASE_INVALID')
+        if expected_class == 'availability_fault' and stage_ms <= GATEWAY_WEBHOOK_TIMEOUT_MS:
+            raise ValueError('DEADLINE_CASE_INVALID')
 
 
 def cases() -> list[dict]:
-    """Cases for the runner, validated against the registry before any run."""
-    result = registered_cases()
-    ids = [case['id'] for case in result]
-    if len(ids) != EXPECTED_CASE_COUNT or len(set(ids)) != EXPECTED_CASE_COUNT:
-        raise ValueError('DEADLINE_SUITE_CHANGED: review the registered suite before changing its size')
-    for case in result:
-        if case['phase'] not in ('request', 'response') or case['outcome'] not in EXPECTED_CLASS:
-            raise ValueError('DEADLINE_CASE_INVALID')
-        if type(case['stage_ms']) is not int or case['stage_ms'] < 0:
-            raise ValueError('DEADLINE_CASE_INVALID')
-        expected = EXPECTED_CLASS[case['outcome']]
-        within = not over_budget(case['stage_ms'])
-        if expected == 'allow' and not within:
-            raise ValueError('DEADLINE_CASE_INVALID')
-        if expected == 'guard_deadline_decision' and within:
-            raise ValueError('DEADLINE_CASE_INVALID')
-        if expected == 'availability_fault' and case['stage_ms'] <= GATEWAY_WEBHOOK_TIMEOUT_MS:
-            raise ValueError('DEADLINE_CASE_INVALID')
+    """Runner cases; refused unless the contract and runner registry both agree."""
+    if not contract_matches_pin():
+        raise ValueError('DEADLINE_CONTRACT_CHANGED: review the expected contract before changing the suite')
+    _validate_contract(EXPECTED_CONTRACT)
+    try:
+        runner = tuple((i, p, s, EXPECTED_CLASS[o]) for i, p, s, o in REGISTERED_CASES)
+    except KeyError as exc:
+        raise ValueError('DEADLINE_CASE_INVALID') from exc
+    _validate_contract(runner)
+    if not registries_agree():
+        raise ValueError('DEADLINE_RUNNER_REGISTRY_MISMATCH: the runner and gate registries must agree')
     if validate_budget(DECLARED_BUDGET_MS, TRANSPORT_RESERVE_MS, SAFETY_MARGIN_MS) != DECLARED_GUARD_BUDGET_MS:
         raise ValueError('DEADLINE_DECLARATION_MISMATCH')
-    return result
+    return runner_cases()
 
 
 def classify(row: dict) -> str:
@@ -110,10 +166,16 @@ def classify(row: dict) -> str:
 
 def expected_counts(case: dict) -> dict:
     # Both hooks run for an allowed request; any stop ends the phases after it.
-    if case['outcome'] == 'allow':
+    if case['expected_class'] == 'allow':
         return {'request': 1, 'response': 1, 'upstream': 1}
     return ({'request': 1, 'response': 0, 'upstream': 0} if case['phase'] == 'request'
             else {'request': 1, 'response': 1, 'upstream': 1})
+
+
+def expected_hook_calls(case: dict) -> int:
+    """Only hooks answer; the upstream counter is not a guard decision."""
+    counts = expected_counts(case)
+    return counts['request'] + counts['response']
 
 
 def case_passes(row: dict, case: dict) -> bool:
@@ -124,26 +186,29 @@ def case_passes(row: dict, case: dict) -> bool:
             return False
         if any(type(v) is not int for v in row['counts'].values()):
             return False
-        if classify(row) != EXPECTED_CLASS[case['outcome']]:
+        if classify(row) != case['expected_class']:
             return False
         decisions = row['guard_decisions']
+        # Pin the number of hook decisions: an observation with extra (or missing)
+        # decisions must not be able to satisfy any branch below.
+        if type(decisions) is not list or len(decisions) != expected_hook_calls(case):
+            return False
         slow = [d for d in decisions if type(d.get('stage_ms')) is int and d['stage_ms'] > 0]
         if len(slow) != 1 or slow[0]['stage_ms'] != case['stage_ms'] or slow[0].get('phase') != case['phase']:
             return False
-        if case['outcome'] == 'allow':
+        if case['expected_class'] == 'allow':
             return (stock.control_passes(row, 'allow')
                     and row['counts'] == expected_counts(case)
                     and row['elapsed_ms'] < TIMEOUT_MIN_MS
-                    and len(decisions) == 2
                     and all(d.get('allowed') is True and d.get('delivered') is True for d in decisions))
-        if case['outcome'] == 'guard_deny':
+        if case['expected_class'] == 'guard_deadline_decision':
             return (row['http_status'] == 503 and row['counts'] == expected_counts(case)
                     and row['client_marker_visible'] is False
                     and row['client_body_is_guard_denial'] is True
                     and 0 < row['elapsed_ms'] < TIMEOUT_MIN_MS
                     and slow[0]['allowed'] is False and slow[0]['reason'] == GUARD_DEADLINE_EXCEEDED
                     and slow[0]['delivered'] is True)
-        if case['outcome'] == 'gateway_timeout':
+        if case['expected_class'] == 'availability_fault':
             return (400 <= row['http_status'] <= 599 and row['counts'] == expected_counts(case)
                     and row['client_marker_visible'] is False
                     and row['client_body_is_guard_denial'] is False
@@ -155,9 +220,11 @@ def case_passes(row: dict, case: dict) -> bool:
 
 
 def deadline_status(rows: list) -> str:
-    """Bind the gate to the frozen registry, then recompute every assertion."""
+    """Bind the gate to the pinned contract, never to the runner registry."""
     expected = registered_cases()
     try:
+        if not registries_agree():
+            return 'FAIL'
         if type(rows) is not list or len(rows) != EXPECTED_CASE_COUNT:
             return 'FAIL'
         if {r['id'] for r in rows} != registered_ids():
@@ -166,7 +233,7 @@ def deadline_status(rows: list) -> str:
         if not all(case_passes(by_id[case['id']], case) for case in expected):
             return 'FAIL'
         classes = {r['id']: classify(r) for r in rows}
-        if not all(classes[case['id']] == EXPECTED_CLASS[case['outcome']] for case in expected):
+        if not all(classes[case['id']] == case['expected_class'] for case in expected):
             return 'FAIL'
         # An availability fault must be attributable to a phase that never
         # delivered: only fast phases may have answered.

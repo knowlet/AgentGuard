@@ -22,9 +22,9 @@ v1.5.0 對 webhook backend 插入 10 秒 `BackendRequestTimeout` [S25]。那是*
 | 預算內 | inside_budget request／response（1,200 ms） | HTTP 200、兩個 hook 都送達 allow、上游 1 次、結構與 marker 符合 |
 | 邊界內 | at_budget_boundary_request（= 1,500 ms） | 花完預算仍算在預算內（比較為嚴格大於） |
 | 超預算 | just_over_budget request／response（1,501 ms）、over_budget_request（4,000 ms） | HTTP 503 加固定 body、`delivered=true`、`GUARD_DEADLINE_EXCEEDED`、elapsed < 9,000 ms（由 guard 而非 Gateway 決定）、無 marker 洩漏 |
-| 未設預算 | unbounded_stage request／response（11,000 ms） | Gateway 逾時、elapsed 9–16 秒、**沒有**送達的決策、分類為 availability fault；此列不得被當成防禦 |
+| 未設預算 | unbounded_stage request／response（11,000 ms） | Gateway 逾時、elapsed 9–16 秒、**逾時 phase** 的決策未送達（response case 的 request hook allow 仍已送達）、分類為 availability fault；此列不得被當成防禦 |
 
-`deadline_status()` 綁定 frozen registry，重新由 observations 計算分類，不讀 `assertion_passed`；缺列、重複、替換、把 guard deny 記成 200、把 Gateway timeout 記成 9 秒內、或替 availability fault 補一個送達決策，全部 FAIL。route 使用與 context 切片相同的 preflighted shape，`validate_route()` 失敗就不可能產生 deadline PASS。
+`deadline_status()` 綁定**閘門自己**的 frozen contract（`EXPECTED_CONTRACT`，另由 `EXPECTED_CONTRACT_SHA256` 釘住），不讀 runner 的 `REGISTERED_CASES`；`cases()` 必須先確認兩份註冊一致才肯跑，因此改 runner registry 不會改變閘門接受的內容。每個 case 另外釘住 hook 決策數量（request／response 的預期呼叫數），多一個或少一個決策都不算通過。分類一律由 observations 重算，不讀 `assertion_passed`：缺列、重複、替換、把 guard deny 記成 200、把 Gateway timeout 記成 9 秒內、替 availability fault 補送達決策，或替逾時 phase 多塞一個決策，全部 FAIL。route 使用與 context 切片相同的 preflighted shape，`validate_route()` 失敗就不可能產生 deadline PASS。
 
 ## 未涵蓋
 

@@ -15,8 +15,8 @@ from tools import deadline_probe as probe
 
 def observation(case):
     """Rows that must PASS, built from the case's registered expectation."""
-    outcome = case['outcome']
-    timeout = outcome == 'gateway_timeout'
+    expected_class = case.get('expected_class') or probe.EXPECTED_CLASS[case['outcome']]
+    timeout = expected_class == 'availability_fault'
     exceeded = budget.over_budget(case['stage_ms'])
     decisions = []
     counts = probe.expected_counts(case)
@@ -33,13 +33,13 @@ def observation(case):
                           'stage_ms': stage, 'delivered': not (timeout and slow)})
     elapsed = 10000.0 if timeout else 1000.0
     return {'id': case['id'], 'phase': case['phase'],
-            'http_status': 200 if outcome == 'allow' else (503 if outcome == 'guard_deny' else 503),
+            'http_status': 200 if expected_class == 'allow' else 503,
             'counts': counts, 'elapsed_ms': elapsed, 'process_listener_owned': True,
-            'client_marker_visible': outcome == 'allow' and case['phase'] == 'response',
-            'client_body_is_guard_denial': outcome == 'guard_deny',
+            'client_marker_visible': expected_class == 'allow' and case['phase'] == 'response',
+            'client_body_is_guard_denial': expected_class == 'guard_deadline_decision',
             'upstream_received_marker': counts['upstream'] == 1,
             'request_structure_preserved': counts['upstream'] == 1,
-            'response_structure_preserved': outcome == 'allow',
+            'response_structure_preserved': expected_class == 'allow',
             'guard_decisions': decisions, 'assertion_passed': True}
 
 
@@ -92,6 +92,36 @@ class DeadlineEvidence(unittest.TestCase):
         with patch.object(probe, 'REGISTERED_CASES', tuple(broken)):
             with self.assertRaisesRegex(ValueError, 'DEADLINE_CASE_INVALID'):
                 probe.cases()
+            self.assertEqual(probe.deadline_status([observation(c) for c in probe.registered_cases()]), 'FAIL')
+
+    def test_runner_registry_drift_is_refused(self):
+        # Internally consistent but different from the pinned contract.
+        drifted = [list(case) for case in probe.REGISTERED_CASES]
+        drifted[0][2] = 1300
+        with patch.object(probe, 'REGISTERED_CASES', tuple(tuple(c) for c in drifted)):
+            with self.assertRaisesRegex(ValueError, 'RUNNER_REGISTRY_MISMATCH'):
+                probe.cases()
+            self.assertEqual(probe.deadline_status([observation(c) for c in probe.registered_cases()]), 'FAIL')
+
+    def test_contract_digest_and_boundary_are_both_pinned(self):
+        # Editing the gate's expectation without its digest is refused outright.
+        broken = list(probe.EXPECTED_CONTRACT)
+        broken[3] = ('just_over_budget_request', 'request', 10, 'guard_deadline_decision')
+        with patch.object(probe, 'EXPECTED_CONTRACT', tuple(broken)):
+            with self.assertRaisesRegex(ValueError, 'CONTRACT_CHANGED'):
+                probe.cases()
+            self.assertEqual(probe.deadline_status([observation(c) for c in probe.runner_cases()]), 'FAIL')
+        # A contract that contradicts its own boundary is refused as well.
+        with patch.object(probe, 'EXPECTED_CONTRACT', tuple(broken)), \
+             patch.object(probe, 'EXPECTED_CONTRACT_SHA256', 'not-the-digest'):
+            with self.assertRaisesRegex(ValueError, 'CONTRACT_CHANGED'):
+                probe.cases()
+        inconsistent = list(probe.EXPECTED_CONTRACT)
+        inconsistent[3] = ('just_over_budget_request', 'request', 10, 'guard_deadline_decision')
+        with patch.object(probe, 'EXPECTED_CONTRACT', tuple(inconsistent)), \
+             patch.object(probe, 'contract_digest', lambda contract=None: probe.EXPECTED_CONTRACT_SHA256):
+            with self.assertRaisesRegex(ValueError, 'DEADLINE_CASE_INVALID'):
+                probe.cases()
 
     def test_shrunk_or_replaced_suite_cannot_pass(self):
         rows = [observation(c) for c in probe.cases()]
@@ -126,6 +156,11 @@ class DeadlineEvidence(unittest.TestCase):
         # assertion_passed is never read as evidence.
         bad = copy.deepcopy(rows)
         bad[index['inside_budget_request']].update(http_status=503, assertion_passed=True)
+        self.assertEqual(probe.deadline_status(bad), 'FAIL')
+        # An extra hook decision must not satisfy the decision-count pin.
+        bad = copy.deepcopy(rows)
+        bad[index['over_budget_request']]['guard_decisions'].append(
+            {'phase': 'response', 'allowed': True, 'reason': 'FIXTURE_ALLOW', 'stage_ms': 0, 'delivered': True})
         self.assertEqual(probe.deadline_status(bad), 'FAIL')
 
     def test_fixture_denies_over_budget_and_allows_inside_it(self):
