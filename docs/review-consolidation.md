@@ -12,7 +12,7 @@ fixed or passed on that old branch.
 | Shrinking fixture set validates itself | fixed 84 phase identities, suite digest, raw fixture/runner/helper hashes bound in producer manifest; shrink and substitution tests. |
 | Manifest hashes treated as authentication | separate build/consumer jobs, immutable artifact ID and job-output reference; no release attestation or deployment approval claimed. |
 | Partial patch writes | stage all files, rollback caught replace failures, actual filesystem assertions for each output; crash/rollback-I/O failure requires disposable checkout replacement. |
-| Upstream tree drift | exact Git root/HEAD/clean worktree before patch; build only allows reviewed two-file diff and verifies patch hashes/default features. |
+| Upstream tree drift | exact Git root/HEAD/clean worktree before patch; build recomputes patched bytes from pinned Git objects, permits only the reviewed two-file diff, rejects untracked/ignored inputs, and verifies actual defaults. |
 | Source-text tests instead of behavior | execute patch generator and report path; inspect written bytes/JSON and CLI exit status. |
 | Toolchain/default features | one build entrypoint verifies actual defaults, command argv/environment, and rustc version; fake compiler tests exercise the entrypoint. |
 | Faults without recovery | HTTP status/non-JSON/disconnect/truncation/10s timeout, each followed by allowed request, separate from ASR/FPR. |
@@ -26,12 +26,27 @@ provider model override. No route activation service exists yet. A rejected
 configuration is launched only by the fault-injection runner to independently
 verify runtime missing-context denial, never as a production fallback.
 
-13 registered scenarios cover original path/media/model/stream observation,
-OpenAI's omitted-stream default via an explicit CEL expression (not a missing
-header fallback), forged client headers being overwritten, true streaming,
-unapproved models, and four individually missing/failed CEL mappings. A verified
-body-only waveform does not establish original input coverage, identity, arbitrary
-provider behavior, all endpoint ingress, or complete deadline/audit guarantees.
+37 registered scenarios now exercise **both request and response**: five legitimate/
+policy controls and 32 missing/failed-mapping cases (2 phases × 4 headers ×
+2 failure types × with/without forged client headers). Response denials require
+request allow, one upstream execution, response hook observation, and no client
+marker. Positive controls preserve the payload and inspect both contexts.
+
+The old request-only probe masked a real integration defect: upstream response
+webhook evaluation receives no `llmRequest`. Both phases now use the original
+buffered `json(request.body)` for model/stream. Missing/invalid body does not mean
+`stream=false`: only a successfully parsed object lacking the stream key gets
+that documented protocol default. Non-boolean stream values produce `invalid`.
+The narrow profile still forbids transformations/model overrides; raw body is
+retained in bounded request-snapshot memory, not emitted into these decision logs.
+
+The fixture configuration also previously shared one mutable webhook object
+between phases. The new builder deliberately separates them, with a regression
+ensuring a response-only mapping fault leaves request mappings intact.
+
+Per-case configs/logs and distinct phase decisions are preserved. A finite
+context suite does not establish arbitrary original-field coverage, identity,
+all endpoints, or complete deadline/audit guarantees.
 
 Local stock Gateway context observations are diagnostic development evidence.
 Only the exact new CI build's native/Compose artifacts establish its scoped
@@ -43,3 +58,23 @@ Run 35301210454 failed before the Gateway compilation: the minor channel `1.98`
 installed Rust 1.98.1 while the build gate required 1.98.0. The workflow, build
 entrypoint, and manifest now all require the full `1.98.0` pin. The version check
 was not relaxed; the failed run remains evidence of a correctly rejected mismatch.
+
+## Second review hardening
+
+- The build manifest cannot attest its own modified webhook: expected bytes are
+  regenerated from the pinned upstream Git object and local exact patch, then
+  compared with both worktree and manifest, before and after compilation.
+- Cargo uses an allowlisted environment, fresh CARGO_HOME/target directory, fixed
+  target/flags/toolchain. All inherited Cargo/Rust/native-compiler overrides and
+  credentials are absent. Runner PATH/compiler/linker/kernel remain trust roots;
+  this is not a claim of reproducible release bytes or hostile-host resistance.
+- Atomic writes validate every existing ancestor before writing, then traverse
+  and replace through O_NOFOLLOW directory handles. Symlink and I/O-failure tests
+  use actual filesystem objects. Concurrent root/same-UID directory renames and
+  crash atomicity remain outside the private-workspace contract.
+- Every active workflow script explicitly sets `-euo pipefail`. Tests execute
+  the actual saved Python-test run block with a failing executable on PATH;
+  comments or an unrelated bash command cannot make that regression pass.
+
+New source changes require a fresh producer build and native/Compose acceptance.
+Earlier successful run IDs remain historical, not evidence for this new head.

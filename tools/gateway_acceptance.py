@@ -77,6 +77,8 @@ def verify_build(binary: Path, manifest: Path) -> tuple[bytes, dict]:
         'wire_profile': 'normalized-text-v1',
         'suite': suite_binding(),
         'toolchain': '1.98.0',
+        'build_target': 'x86_64-unknown-linux-gnu',
+        'build_environment_policy': 'allowlist-v1-fresh-cargo-home-and-target',
         'build_features': ['jemalloc', 'mimalloc', 'crypto-aws-lc'],
     }
     if not isinstance(info, dict) or any(info.get(k) != v for k, v in expected.items()):
@@ -153,7 +155,8 @@ def negative_cases() -> list[dict]:
 
 def suite_binding() -> dict:
     cases = negative_cases()
-    files = ('tools/gateway_acceptance.py', 'tools/gateway_probe.py',
+    files = ('tools/build_gateway.py', 'tools/atomic_files.py',
+             'tools/gateway_acceptance.py', 'tools/gateway_probe.py',
              'tools/process_identity.py', 'tools/context_probe.py', 'agentguard/context.py',
              'tests/fixtures/webhook-negative.json')
     return {'phase_cases': EXPECTED_NEGATIVE_PHASES,

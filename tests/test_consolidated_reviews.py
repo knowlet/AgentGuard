@@ -57,12 +57,13 @@ class PatchTransaction(unittest.TestCase):
         for target in (self.decoder, self.target, self.manifest):
             with self.subTest(target=target):
                 failed = False
-                def injected(src, dst):
+                def injected(src, dst, **kwargs):
                     nonlocal failed
-                    if Path(dst) == target and not failed:
+                    actual = Path(os.readlink(f'/proc/self/fd/{kwargs["dst_dir_fd"]}')) / dst if 'dst_dir_fd' in kwargs else Path(dst)
+                    if actual == target and not failed:
                         failed = True
                         raise OSError('injected write failure')
-                    return real(src,dst)
+                    return real(src,dst,**kwargs)
                 with patch.object(atomic_files.os, 'replace', side_effect=injected):
                     with self.assertRaises(OSError): patcher.apply(self.source,self.manifest)
                 self.assert_unchanged()
@@ -160,6 +161,8 @@ class AcceptanceReview(unittest.TestCase):
             info={'kind':'agentguard-gateway-patch/v1','source_revision':UPSTREAM_REVISION,'upstream_webhook_git_blob':WEBHOOK_BLOB,
                   'decoder_sha256':hashlib.sha256((ROOT/'patches/agentgateway-v1.5.0/strict_wire.rs').read_bytes()).hexdigest(),
                   'installer_sha256':hashlib.sha256((ROOT/'tools/apply_gateway_patch.py').read_bytes()).hexdigest(),
+                  'build_target':'x86_64-unknown-linux-gnu',
+                  'build_environment_policy':'allowlist-v1-fresh-cargo-home-and-target',
                   'wire_profile':'normalized-text-v1','toolchain':'1.98.0','build_features':['jemalloc','mimalloc','crypto-aws-lc'],
                   'binary_sha256':hashlib.sha256(exe.read_bytes()).hexdigest(),'suite':accept.suite_binding()}
             m.write_text(json.dumps(info)); digest=hashlib.sha256(m.read_bytes()).hexdigest()

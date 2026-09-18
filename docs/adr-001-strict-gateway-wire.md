@@ -58,3 +58,22 @@ Patch installer 對 decoder、webhook、manifest 全部先 staging，再依序 r
 建置統一走 `tools.build_gateway`，實際驗證 upstream default features 與 `rustc 1.98.0`，固定 `RUSTUP_TOOLCHAIN=1.98.0`，不靠搜尋 workflow 裡的一行文字。上游已有 rust-toolchain.toml，因此先前的「必然用了 runner default」推斷不成立；顯式設定用來排除較高優先序 override，並留下可測試的契約。
 
 Build 與 acceptance 分成不同 GitHub Actions jobs。Consumer 只下載 `needs.build` 回傳的 artifact ID，manifest SHA-256 由 GitHub job output 傳遞，不從待驗證的本機 manifest 自行重算成信任根；manifest 同時綁完整 fixture、runner、base probe、process/context adapter digests 及固定 84-case 集合。此處僅為同一 PR run 的完整性檢查：PR 作者仍可修改 workflow，沒有 release 簽章／獨立 publisher approval，報告固定 `deployment_approved=false`。不能拿這份 manifest 當 production policy activation 授權。
+
+
+## 雙向 context 與第二輪 review
+
+上游 `evaluate_webhook_response` 建立 `EvaluationContext::new(original, None)`；
+因此 response 的 model/stream 不能沿用 request-phase-only 的 `llmRequest`。
+現在兩階段的 CEL 都讀原始 buffered `request.body`，使用 `json(request.body)`
+取得 model/stream。解析失敗、缺原始 body、缺任一必要 header 或 CEL 錯誤都拒絕；
+只有已解析的 JSON 物件省略 stream 才採 false。真實 runner 分別破壞兩階段的
+mapping；response deny 不要求 upstream=0，而要求 response hook 執行且不洩漏。
+
+Build 重新由固定 Git 原文計算預期 webhook bytes，不讓 worktree 和 manifest
+一起被修改後自證。預設 features／上游 diff／untracked inputs 在編譯前後檢查；
+Cargo home 和 target 使用新建目錄，環境變數採 allowlist，固定 target 與 1.98.0。
+這仍依賴可信 runner 的 compiler、linker、PATH 與 kernel，不是發布簽章。
+
+寫入器檢查所有父目錄且以 O_NOFOLLOW dirfd 進行 staging／replace／rollback，
+避免父目錄 symlink 導向輸出樹外。工作目錄應為私有且不被其他 writer 修改；
+多檔案 crash atomicity 仍不在保證內。完整案例與對照見 review-consolidation.md。

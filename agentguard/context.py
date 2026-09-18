@@ -5,11 +5,14 @@ validate_config(). Never expose this adapter directly to an untrusted client.
 """
 from __future__ import annotations
 
+# The response hook has no llmRequest. Both phases use the original buffered
+# request snapshot. Missing/invalid/unbuffered body makes json() fail; only a
+# parsed object with an absent stream key gets the protocol default false.
 HEADER_EXPRESSIONS = {
     'x-ag-original-path': 'request.path',
     'x-ag-original-media-type': 'request.headers["content-type"]',
-    'x-ag-effective-stream': 'has(llmRequest.stream) ? string(llmRequest.stream) : "false"',
-    'x-ag-requested-model': 'llmRequest.model',
+    'x-ag-effective-stream': '"stream" in json(request.body) ? (type(json(request.body).stream) == bool ? string(json(request.body).stream) : "invalid") : "false"',
+    'x-ag-requested-model': 'json(request.body).model',
 }
 
 

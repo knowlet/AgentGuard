@@ -31,6 +31,7 @@ jobs:
           COMMIT: ${{ github.sha }}
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           git init .
           git remote add origin "https://github.com/${REPOSITORY}.git"
           AUTH=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
@@ -42,12 +43,14 @@ jobs:
           git checkout --detach FETCH_HEAD
       - name: Python contract tests
         run: |
+          set -euo pipefail
           mkdir -p reports
           python3 -m unittest discover -s tests -v 2>&1 | tee reports/python-tests.log
           git rev-parse HEAD > reports/tested-commit.txt
           git archive --format=zip HEAD -o reports/source.zip
       - name: Fetch pinned upstream and apply exact-source patch
         run: |
+          set -euo pipefail
           git init "$RUNNER_TEMP/upstream"
           git -C "$RUNNER_TEMP/upstream" remote add origin https://github.com/agentgateway/agentgateway.git
           git -C "$RUNNER_TEMP/upstream" fetch --depth=1 origin fe6732474a96a0363dfb9822859af4e9bab360fa
@@ -59,15 +62,18 @@ jobs:
           rustup toolchain install 1.98.0 --profile minimal
       - name: Native Serde regression tests (not Gateway E2E)
         run: |
+          set -euo pipefail
           python3 -m tools.prepare_wire_harness --source "$RUNNER_TEMP/upstream" --output "$RUNNER_TEMP/wire-harness"
           RUSTUP_TOOLCHAIN=1.98.0 cargo test --manifest-path "$RUNNER_TEMP/wire-harness/Cargo.toml" 2>&1 | tee reports/serde-tests.log
           cp "$RUNNER_TEMP/wire-harness/Cargo.lock" reports/serde-Cargo.lock
       - name: Compile patched Gateway with verified toolchain and features
         run: |
+          set -euo pipefail
           python3 -m tools.build_gateway --source "$RUNNER_TEMP/upstream" --manifest reports/patch-manifest.json --binary reports/patched-bin/agentgateway 2>&1 | tee reports/build.log
       - name: Publish build reference through GitHub job outputs
         id: reference
         run: |
+          set -euo pipefail
           printf 'manifest_sha256=%s\n' "$(sha256sum reports/patch-manifest.json | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
       - name: Upload immutable build inputs for a separate consumer job
         id: binary-artifact
@@ -107,6 +113,7 @@ jobs:
           COMMIT: ${{ github.sha }}
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           git init .
           git remote add origin "https://github.com/${REPOSITORY}.git"
           AUTH=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
@@ -124,10 +131,12 @@ jobs:
           merge-multiple: true
       - name: Real patched Gateway wire and context acceptance
         run: |
+          set -euo pipefail
           python3 -m tools.gateway_acceptance --gateway-bin reports/patched-bin/agentgateway --build-manifest reports/patch-manifest.json --report reports/gateway-patched.json
           python3 -m tools.context_probe --gateway-bin reports/patched-bin/agentgateway --build-manifest reports/patch-manifest.json --report reports/context.json
       - name: Real patched Gateway and context in isolated Compose
         run: |
+          set -euo pipefail
           docker compose -f deploy/compose/compose.patched.yaml config --quiet
           docker compose -f deploy/compose/compose.patched.yaml run --build --rm patched-wire
           docker compose -f deploy/compose/compose.patched.yaml run --rm --entrypoint python patched-wire -m tools.context_probe --gateway-bin /usr/local/bin/agentgateway --build-manifest /app/build-manifest.json --report /evidence/context.json
@@ -135,6 +144,7 @@ jobs:
       - name: Collect Compose evidence and remove only this job's resources
         if: always()
         run: |
+          set -euo pipefail
           if docker volume inspect "${COMPOSE_PROJECT_NAME}_patched-evidence" >/dev/null 2>&1; then
             mkdir -p reports/compose
             docker compose -f deploy/compose/compose.patched.yaml run --rm --entrypoint python patched-wire -c 'import sys,tarfile; t=tarfile.open(fileobj=sys.stdout.buffer, mode="w|"); t.add("/evidence",arcname="."); t.close()' > reports/compose.tar

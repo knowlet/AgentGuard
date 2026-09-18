@@ -85,6 +85,7 @@ class GatewayPatchTests(unittest.TestCase):
         self.assertFalse(strict_rejection(r))
 
     def test_pipeline_exit_codes_are_not_hidden_by_tee(self):
-        import subprocess
-        result = subprocess.run(['bash', '-o', 'pipefail', '-c', 'exit 7 | cat'], capture_output=True)
-        self.assertEqual(result.returncode, 7)
+        from test_workflow_shell import WORKFLOW, assert_shell_contract
+        # Validate the real workflow; executable failure injection is in
+        # test_workflow_shell, using this workflow's actual Python test step.
+        self.assertTrue(assert_shell_contract(WORKFLOW.read_text()))
