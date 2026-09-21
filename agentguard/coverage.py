@@ -72,6 +72,11 @@ def _revision(value: Any) -> bool:
 
 
 def _pointer(value: Any, *, allow_none: bool = False) -> bool:
+    """Validate a non-empty JSON Pointer used by a field-level row.
+
+    The field matrix excludes the document-root pointer ``""``. ``"/"``
+    remains valid and addresses a member whose name is empty.
+    """
     if allow_none and value is None:
         return True
     return (isinstance(value, str) and value
@@ -264,6 +269,13 @@ def validate_matrix(matrix: dict[str, Any], *, expected_bindings: dict[str, str]
         identities.append(_validate_matrix_row(row))
     if len(set(identities)) != len(identities):
         raise CoverageRejected('MATRIX_DUPLICATE_ROW')
+    normalized_identities = [
+        (row['phase'], row['normalized_pointer'])
+        for row in rows
+        if row['status'] == 'observed_inspected'
+    ]
+    if len(set(normalized_identities)) != len(normalized_identities):
+        raise CoverageRejected('MATRIX_NORMALIZED_POINTER_COLLISION')
     if {phase for phase, _ in identities} != set(PHASES):
         raise CoverageRejected('MATRIX_PHASE_COVERAGE_MISSING')
     unknown_rejected = _unknown_rejection_contract(rows)
@@ -496,16 +508,20 @@ def validate_coverage_route(route: dict[str, Any], *, deployment_config: dict[st
     from agentguard.context import validate_route
 
     actual_route = _deployed_route(deployment_config)
-    if route != actual_route:
+    try:
+        route_matches = canonical_bytes(route) == canonical_bytes(actual_route)
+    except CoverageRejected as exc:
+        raise CoverageRejected('COVERAGE_ROUTE_SELECTION_MISMATCH') from exc
+    if not route_matches:
         raise CoverageRejected('COVERAGE_ROUTE_SELECTION_MISMATCH')
     _validate_bindings(expected_bindings, expected_bindings)
     if expected_bindings.get('gateway_config') != deployment_config_sha256(deployment_config):
         raise CoverageRejected('COVERAGE_DEPLOYMENT_BINDING_MISMATCH')
     try:
-        validate_route(route)
+        validate_route(actual_route)
     except ValueError as exc:
         raise CoverageRejected('COVERAGE_ROUTE_UNVERIFIED') from exc
-    actual_route_sha256 = route_sha256(route)
+    actual_route_sha256 = route_sha256(actual_route)
     if (type(expected_scope) is not dict
             or expected_scope.get('route_sha256') != actual_route_sha256):
         raise CoverageRejected('COVERAGE_ROUTE_SCOPE_MISMATCH')

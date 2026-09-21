@@ -307,6 +307,69 @@ class CoveragePreflight(unittest.TestCase):
                 now=self.NOW,
             )
 
+    def test_route_authority_rejects_json_type_coercion(self):
+        for actual_value, caller_value in ((True, 1), (False, 0.0), (1, 1.0)):
+            with self.subTest(actual_value=actual_value, caller_value=caller_value):
+                actual_route = self.route()
+                caller_route = copy.deepcopy(actual_route)
+                actual_route['backends'][0]['ai']['name'] = actual_value
+                caller_route['backends'][0]['ai']['name'] = caller_value
+                config = self.deployment_config(actual_route)
+                bindings = dict(
+                    self.BINDINGS,
+                    gateway_config=deployment_config_sha256(config),
+                )
+                matrix = self.matrix(actual_route)
+                matrix['bindings'] = bindings
+                evidence = self.evidence(matrix, actual_route)
+                raw = json.dumps(
+                    evidence, sort_keys=True, separators=(',', ':')
+                ).encode()
+                with self.assertRaisesRegex(
+                        CoverageRejected, 'COVERAGE_ROUTE_SELECTION_MISMATCH'):
+                    validate_coverage_route(
+                        caller_route,
+                        deployment_config=config,
+                        coverage_raw=raw,
+                        coverage_artifact_sha256=hashlib.sha256(raw).hexdigest(),
+                        expected_matrix=matrix,
+                        trusted_matrix_sha256=matrix_sha256(matrix),
+                        trusted_gateway_log_sha256=self.gateway_evidence()['log_artifact_sha256'],
+                        trusted_gateway_evidence_sha256=gateway_evidence_sha256(
+                            self.gateway_evidence()),
+                        expected_bindings=bindings,
+                        expected_scope=matrix['scope'],
+                        now=self.NOW,
+                    )
+
+    def test_route_key_order_is_not_semantic(self):
+        route = self.route()
+        reordered = json.loads(json.dumps(route, sort_keys=True))
+        config = self.deployment_config(route)
+        bindings = dict(
+            self.BINDINGS,
+            gateway_config=deployment_config_sha256(config),
+        )
+        matrix = self.matrix(route)
+        matrix['bindings'] = bindings
+        evidence = self.evidence(matrix, route)
+        raw = json.dumps(evidence, sort_keys=True, separators=(',', ':')).encode()
+        result = validate_coverage_route(
+            reordered,
+            deployment_config=config,
+            coverage_raw=raw,
+            coverage_artifact_sha256=hashlib.sha256(raw).hexdigest(),
+            expected_matrix=matrix,
+            trusted_matrix_sha256=matrix_sha256(matrix),
+            trusted_gateway_log_sha256=self.gateway_evidence()['log_artifact_sha256'],
+            trusted_gateway_evidence_sha256=gateway_evidence_sha256(
+                self.gateway_evidence()),
+            expected_bindings=bindings,
+            expected_scope=matrix['scope'],
+            now=self.NOW,
+        )
+        self.assertEqual(result['status'], 'COVERAGE_ROUTE_PREFLIGHTED')
+
     def test_route_preflight_binds_complete_deployment_config(self):
         route = self.route()
         config = self.deployment_config(route)
@@ -365,7 +428,27 @@ class CoveragePreflight(unittest.TestCase):
         with self.assertRaisesRegex(CoverageRejected, 'MATRIX_PHASE_COVERAGE_MISSING|MATRIX_UNKNOWN_FIELD_COVERAGE_MISSING|MATRIX_UNKNOWN_INGRESS_UNPROTECTED'):
             self.validate(matrix)
 
-    def test_empty_pointer_is_rejected_but_root_and_escaped_pointers_remain_valid(self):
+    def test_normalized_pointer_collision_is_rejected(self):
+        matrix = self.matrix()
+        duplicate_target = copy.deepcopy(matrix['rows'][0])
+        duplicate_target['pointer'] = '/other'
+        duplicate_target['fixture_id'] = 'request-other'
+        matrix['rows'].insert(1, duplicate_target)
+        with self.assertRaisesRegex(
+                CoverageRejected, 'MATRIX_NORMALIZED_POINTER_COLLISION'):
+            self.validate(matrix)
+
+    def test_same_normalized_pointer_is_allowed_across_phases(self):
+        matrix = self.matrix()
+        response_alias = copy.deepcopy(matrix['rows'][0])
+        response_alias['phase'] = 'response'
+        response_alias['pointer'] = '/response_alias'
+        response_alias['fixture_id'] = 'response-alias'
+        matrix['rows'].insert(2, response_alias)
+        result = self.validate(matrix)
+        self.assertEqual(result['status'], 'COVERAGE_PREFLIGHT_VALIDATED')
+
+    def test_empty_document_pointer_is_rejected_but_empty_name_and_escaped_pointers_remain_valid(self):
         matrix = self.matrix()
         matrix['rows'][0]['pointer'] = ''
         with self.assertRaisesRegex(CoverageRejected, 'MATRIX_ROW_ID_INVALID'):

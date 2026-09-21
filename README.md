@@ -46,7 +46,7 @@ ASR / FPR:            NOT_EVALUATED
 
 PromptGuard 將保護 LLM request/response、PII、secret 與 deterministic decisions；MCPGuard 將透過 ExtMCP 執行 method/tool authorization、tools/list mutation。Assurance 是隔離測試平面；Policy Studio 為 FastAPI control plane＋browser，負責 catalog、表單、驗證、模擬與版本發布。Observability 規劃使用 Prometheus、Loki、Grafana provisioning、Alloy；Guard JSONL 與 Gateway OTLP access logs 分流。這些完整服務、detectors 與 UI 尚未交付。
 
-P0 仍缺：可信身分、G0-COVERAGE 的 native／Compose runtime matrix 與 runner、normalize 前封閉原始 schema 的實際 Gateway enforcement、queue／backpressure／cancel／durable audit 的實際故障，以及 route activation。缺 evidence 的 strict policy 不可 activate；agentguard.coverage 的 preflight 結果不會把 runtime gate 標成 PASS。P2 另須驗證 MCP error sanitizer；backend attestation 永遠不等於 protected。
+P0 仍缺：可信身分、G0-COVERAGE 的 native／Compose runtime matrix 與 runner、normalize 前封閉原始 schema 的實際 Gateway enforcement、queue／backpressure／cancel／durable audit 的實際故障，以及 route activation。缺 evidence 的 strict policy 不可 activate；agentguard.coverage 的 preflight 結果不會把 runtime gate 標成 PASS，也不會把整份 Gateway artifact 當成每個 row 的獨立 runtime event 綁定。P2 另須驗證 MCP error sanitizer；backend attestation 永遠不等於 protected。
 
 Detector 提供 evidence，不能授權；tools/list 隱藏不能替代 tools/call 授權；unknown／缺 context／缺 evidence 不靜默 allow。
 
