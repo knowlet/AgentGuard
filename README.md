@@ -13,7 +13,7 @@ AgentGuard 是以 **AgentGateway 作為 enforcement plane** 的 protocol-aware a
 | Patched acceptance | 6 個合法 controls、84 個負向 phase cases、10 個 transport faults 與 10 次 recovery；Serde、native Gateway、Compose 分層驗證 | 不涵蓋原始 request field coverage、所有 timeout/load、MCP 或 detector 效果 |
 | 雙向 context | 原始 request snapshot 的 CEL mapping、37 組 request/response 案例、每階段決策與 payload 保存驗證 | 不是 authentication、任意欄位 coverage 或 route activation |
 | Guard deadline | 宣告閘門（stage／reserve／margin 需小於 10 秒有效 Gateway timeout）、9 組真實 Gateway below／at／above budget 案例（含提前斷線負向 control）、以單次呼叫的 Gateway log slice 區分 guard 決策、真正 timeout 與 transport 故障 | 不是 latency SLO、detector 延遲、queue／backpressure／cancel，也不是完整 G0-DEADLINE |
-| Evidence preflight | artifact hash、Gateway/config/compiler/adapter digests、scope、freshness、必要 context/coverage/gates | 不是完整 policy compiler、簽章驗證服務或 route activation |
+| Evidence preflight | artifact hash、external field matrix、雙 phase row contract、完整 Gateway config／route digest、native evidence 欄位與 freshness；runtime 狀態固定為 NOT_EVALUATED | 不是 native／Compose coverage runner、完整 policy compiler、簽章驗證服務或 route activation |
 | 統計與結果契約 | Wilson CI、固定樣本規劃、獨立 availability-fault 記帳與回歸測試 | 不是已執行的模型 benchmark 或完整 joint release evaluator |
 
 ### CPU 測試
@@ -46,7 +46,7 @@ ASR / FPR:            NOT_EVALUATED
 
 PromptGuard 將保護 LLM request/response、PII、secret 與 deterministic decisions；MCPGuard 將透過 ExtMCP 執行 method/tool authorization、tools/list mutation。Assurance 是隔離測試平面；Policy Studio 為 FastAPI control plane＋browser，負責 catalog、表單、驗證、模擬與版本發布。Observability 規劃使用 Prometheus、Loki、Grafana provisioning、Alloy；Guard JSONL 與 Gateway OTLP access logs 分流。這些完整服務、detectors 與 UI 尚未交付。
 
-P0 仍缺：可信身分、normalize 前封閉原始 schema 與外部 per-digest field matrix（G0-COVERAGE）、queue／backpressure／cancel／durable audit 的實際故障，以及 route activation。缺 evidence 的 strict policy 不可 activate。P2 另須驗證 MCP error sanitizer；backend attestation 永遠不等於 protected。
+P0 仍缺：可信身分、G0-COVERAGE 的 native／Compose runtime matrix 與 runner、normalize 前封閉原始 schema 的實際 Gateway enforcement、queue／backpressure／cancel／durable audit 的實際故障，以及 route activation。缺 evidence 的 strict policy 不可 activate；agentguard.coverage 的 preflight 結果不會把 runtime gate 標成 PASS，也不會把整份 Gateway artifact 當成每個 row 的獨立 runtime event 綁定。P2 另須驗證 MCP error sanitizer；backend attestation 永遠不等於 protected。
 
 Detector 提供 evidence，不能授權；tools/list 隱藏不能替代 tools/call 授權；unknown／缺 context／缺 evidence 不靜默 allow。
 
