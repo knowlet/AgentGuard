@@ -27,9 +27,17 @@ Controls或stock expectation失敗回1；binary/config/startup等error回2。`--
 
 報告保存binary/config/fixture/runner hashes、HTTP/counters/marker觀察/結構不變量與response hash；不是signed provenance或完整raw artifact。執行前把驗hash後的bytes複製到私有tmpdir，固定argv、shell=False，不對argv做shell escaping，不執行client/webhook提供的命令。
 
+## Field coverage preflight
+
+agentguard.coverage 提供 G0-COVERAGE 的外部 matrix／evidence preflight primitive。它要求可信 matrix 綁定 gateway_image、gateway_config、compiler、adapter，scope 的 phase 固定為 both，並以實際 deployed binds/listeners/routes wrapper 的 digest 綁定 route selection。每個 request／response row 都要有 JSON pointer、normalized pointer、fixture／artifact digest、phase contract、hook/backend/client observations；每個 phase 至少要有一個 field_type=unknown 且 ingress_rejected 的 row，並附 native Gateway rejection evidence 欄位。
+
+validate_coverage_route 只做 route/context/coverage preflight，不啟用 route。這個 slice 沒有 native 或 Compose field-coverage runner，所有通過結果都回傳 runtime_status=NOT_EVALUATED；人工或 synthetic artifact 不能把 G0-COVERAGE 標成 PASS。完整 runtime matrix、log artifact 的獨立產生與 activation caller 仍是後續工作。
+
 ## Evidence preflight
 
-`agentguard.evidence.validate_evidence`接受raw artifact及由可信發布目錄提供的預期artifact hash、gateway_image/config/compiler/adapter digests、route/protocol/phase/schema scope、必需JSON pointers與期限。
+既有 agentguard.evidence.validate_evidence 保留早期通用 evidence contract；G0-COVERAGE 的新欄位與 route wrapper binding 使用 agentguard.coverage。兩者都只是 preflight primitive，不是 runtime runner、簽章驗證服務或 route activation。
+
+agentguard.coverage.validate_coverage_evidence 接受 raw artifact 及由可信發布目錄提供的 matrix hash、artifact hash、gateway_image/config/compiler/adapter digests、both phase scope、route digest 與期限。
 
 Missing/mismatched/expired/future evidence、任一G0非PASS、unknown/缺fields/context、normalize前未知欄位未拒絕、duplicate keys、不合法~0/~1 pointer都拒絕。Returns EVIDENCE_VALIDATED，不代表路由已啟用。這不是完整compiler或簽章服務；若caller相信攻擊者自填hash就破壞前提。測試人工PASS文件僅驗validator，不可冒充runtime evidence。
 
@@ -52,4 +60,4 @@ docker compose -f deploy/compose/compose.yaml --profile cpu-e2e run --rm \
 
 ## 尚未完成
 
-Gateway parser patch與protected acceptance、G0-CONTEXT ingress/CEL、G0-COVERAGE完整matrix、G0-DEADLINE故障suite；正式PromptGuard/ExtMCP adapters、PII/secret detectors、MCP error sanitizer、Policy Studio、vLLM、observability provisioning均未由此切片完成。Issue #2保持open，不能以診斷PR通過代替。
+Gateway parser patch與protected acceptance、G0-CONTEXT ingress/CEL、G0-COVERAGE native／Compose runtime matrix與activation、G0-DEADLINE故障suite；正式PromptGuard/ExtMCP adapters、PII/secret detectors、MCP error sanitizer、Policy Studio、vLLM、observability provisioning均未由此切片完成。Issue #2保持open，不能以診斷PR通過代替。
