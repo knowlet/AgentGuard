@@ -35,13 +35,21 @@ def _reject_constant(_value):
     raise PromptGuardRejected("HOOK_NON_JSON_CONSTANT")
 
 
-def parse_envelope(raw: bytes):
+def parse_json(raw: bytes):
     if type(raw) is not bytes or not 0 < len(raw) <= MAX_BODY_BYTES:
         raise PromptGuardRejected("HOOK_ENVELOPE_INVALID")
     try:
         doc = json.loads(raw, object_pairs_hook=_unique_object, parse_constant=_reject_constant)
+        # Reject exponent overflow and unpaired surrogates before recording an
+        # observation that cannot be represented in the UTF-8 JSON artifact.
+        json.dumps(doc, ensure_ascii=False, allow_nan=False).encode("utf-8")
     except (ValueError, UnicodeError, RecursionError) as exc:
         raise PromptGuardRejected("HOOK_ENVELOPE_INVALID") from exc
+    return doc
+
+
+def parse_envelope(raw: bytes):
+    doc = parse_json(raw)
     if type(doc) is not dict or "body" not in doc:
         raise PromptGuardRejected("HOOK_ENVELOPE_INVALID")
     return doc

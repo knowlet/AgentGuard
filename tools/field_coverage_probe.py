@@ -132,6 +132,7 @@ class ProbeState:
             self.hook_observed_maps = {"request": [], "response": []}
             self.hook_counts = {"request": 0, "response": 0}
             self.backend_payloads = []
+            self.backend_request_hex = []
             self.backend_responses = []
             self.upstream_count = 0
 
@@ -180,12 +181,13 @@ def handler_for(state):
                 if self.path == "/v1/chat/completions":
                     raw = self._read_bytes()
                     try:
-                        payload = json.loads(raw)
-                    except (ValueError, UnicodeError):
+                        payload = promptguard.parse_json(raw)
+                    except promptguard.PromptGuardRejected:
                         payload = None
                     with state.lock:
                         state.upstream_count += 1
                         state.backend_payloads.append(payload)
+                        state.backend_request_hex.append(raw.hex())
                         plan = dict(state.response_plan)
                     response = base_response()
                     for pointer, marker in plan.items():
@@ -244,7 +246,7 @@ def observe_case(url, state, payload, timeout=15):
         status = response.status
     elapsed = round((time.monotonic() - start) * 1000, 3)
     with state.lock:
-        snapshot = {"hook_counts": dict(state.hook_counts), "hook_bodies": copy.deepcopy(state.hook_bodies), "hook_observed_maps": copy.deepcopy(state.hook_observed_maps), "backend_payloads": copy.deepcopy(state.backend_payloads), "backend_responses": copy.deepcopy(state.backend_responses), "upstream_count": state.upstream_count}
+        snapshot = {"hook_counts": dict(state.hook_counts), "hook_bodies": copy.deepcopy(state.hook_bodies), "hook_observed_maps": copy.deepcopy(state.hook_observed_maps), "backend_payloads": copy.deepcopy(state.backend_payloads), "backend_request_hex": list(state.backend_request_hex), "backend_responses": copy.deepcopy(state.backend_responses), "upstream_count": state.upstream_count}
     return {"http_status": status, "request_payload": json.loads(data), "client_body": body, "elapsed_ms": elapsed, "snapshot": snapshot}
 
 
@@ -307,10 +309,8 @@ def parse_client(body):
     if type(body) is not bytes:
         return None
     try:
-        doc = json.loads(body.decode("utf-8"), object_pairs_hook=promptguard._unique_object,
-                         parse_constant=promptguard._reject_constant)
-        canonical(doc)
-    except (ValueError, UnicodeError, RecursionError):
+        doc = promptguard.parse_json(body)
+    except promptguard.PromptGuardRejected:
         return None
     return doc if isinstance(doc, dict) else None
 

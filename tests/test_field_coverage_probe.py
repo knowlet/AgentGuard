@@ -78,6 +78,12 @@ class PromptGuardHook(unittest.TestCase):
         with self.assertRaises(promptguard.PromptGuardRejected):
             promptguard.decide("sideways", {"body": {}}, {})
 
+    def test_nonfinite_and_non_utf8_observations_rejected_at_ingestion(self):
+        for raw in (b'{"body":{"extra":1e400}}', b'{"body":{"extra":"\\ud800"}}',
+                    b'{"body":{"content":"changed","content":"expected"}}'):
+            with self.subTest(raw=raw), self.assertRaises(promptguard.PromptGuardRejected):
+                promptguard.parse_envelope(raw)
+
     def test_action_shapes(self):
         allow = json.loads(promptguard.action_response(allow=True, reason="PROMPTGUARD_ALLOW"))
         self.assertEqual(allow, {"action": {"reason": "PROMPTGUARD_ALLOW"}})
@@ -336,6 +342,19 @@ class DeriveRow(unittest.TestCase):
 
 
 class HTTPObservations(unittest.TestCase):
+    def test_invalid_backend_json_retains_bytes_without_field_evidence(self):
+        opener = build_opener(ProxyHandler({}))
+        with probe.fixture_server() as (state, port):
+            for raw in (b'{"messages":[{"content":"changed","content":"expected"}]}',
+                        b'{"extra":1e400}', b'{"extra":"\\ud800"}'):
+                with self.subTest(raw=raw):
+                    state.reset({}, {})
+                    with opener.open(Request(f"http://127.0.0.1:{port}/v1/chat/completions", data=raw), timeout=5) as response:
+                        response.read()
+                    with state.lock:
+                        self.assertEqual(state.backend_payloads, [None])
+                        self.assertEqual(state.backend_request_hex, [raw.hex()])
+
     def test_real_http_fixture_records_sources_spy_and_control_without_echo(self):
         # This relay tests our measuring instrument over HTTP; native Gateway is CI's job.
         req, resp = "R" * 32, "S" * 32
