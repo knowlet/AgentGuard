@@ -72,7 +72,7 @@ python3 -m tools.fetch_gateway --output /tmp/agentgateway-v1.5.0
 python3 -m tools.field_coverage_probe --gateway-bin /tmp/agentgateway-v1.5.0   --report reports/field-coverage.json
 ```
 
-執行真正的 checksum-pinned Gateway 與 loopback hook／backend fixture：每個欄位送一個全新的隨機 marker，關聯 ingress、hook、backend 與 client 四點觀察。量測結果誠實記錄為 `observed_inspected`、`forwarded_uninspected` 或 `unknown`；沒有原生 Gateway 拒絕證據就不會出現 `ingress_rejected`，transport 層拒絕若缺原生拒絕碼只記為 `unknown` 並附註。報告的 `coverage_gate`、`p0_release_gate` 與 `asr_fpr` 恆為 `NOT_EVALUATED`。Exit 0 只表示量測完成且正向 control 端到端成功，不表示受保護；control 失敗回 1，binary／config／啟動錯誤回 2。
+執行真正的 checksum-pinned Gateway 與 loopback hook／backend fixture：每個欄位送一個全新的隨機 marker，關聯 ingress、hook、backend 與 client 四點觀察。判定一律綁定 JSON pointer 解析（`normalized_pointer` 對 hook、`pointer` 對 backend／client），`detector_text` 欄位另需 detector spy 回報：marker 只出現在文件別處、或 hook 有而 spy 沒有，都不能算 `observed_inspected`。量測結果誠實記錄為 `observed_inspected`、`forwarded_uninspected` 或 `unknown`；沒有原生 Gateway 拒絕證據就不會出現 `ingress_rejected`，transport 層拒絕若缺原生拒絕碼只記為 `unknown` 並附註。request 欄位不要求 client 回音（topology 上 client 是來源不是匯點），response 欄位則需 hook、已呼叫的 backend 與 client 三方一致。報告的 `coverage_gate`、`p0_release_gate` 與 `asr_fpr` 恆為 `NOT_EVALUATED`。Exit 0 只表示量測完成且正向 control 端到端成功，不表示受保護；control 失敗回 1，binary／config／啟動錯誤回 2。
 
 此切片先交付可信的測量工具，不要求把缺口修到綠燈；`forwarded_uninspected` 與 `unknown` 保留為 findings。CI 接線、Compose 路徑、每 row 獨立 Gateway event／log-slice 綁定、normalize 前拒絕的原生執行，以及 activation 整合仍是後續工作。
 

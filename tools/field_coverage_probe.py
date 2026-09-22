@@ -252,7 +252,7 @@ def observe_case(url, state, payload, timeout=15):
         status = response.status
     elapsed = round((time.monotonic() - start) * 1000, 3)
     with state.lock:
-        snapshot = {"hook_counts": dict(state.hook_counts), "hook_bodies": copy.deepcopy(state.hook_bodies), "backend_payloads": copy.deepcopy(state.backend_payloads), "upstream_count": state.upstream_count}
+        snapshot = {"hook_counts": dict(state.hook_counts), "hook_bodies": copy.deepcopy(state.hook_bodies), "hook_observed_maps": copy.deepcopy(state.hook_observed_maps), "backend_payloads": copy.deepcopy(state.backend_payloads), "upstream_count": state.upstream_count}
     return {"http_status": status, "client_body": body, "elapsed_ms": elapsed, "snapshot": snapshot}
 
 
@@ -263,49 +263,166 @@ def marker_in_bodies(bodies, marker):
     return False
 
 
+def resolve_pointer(doc, pointer):
+    if not isinstance(pointer, str) or not pointer.startswith("/"):
+        return False, None
+    current = doc
+    for raw_token in pointer.split("/")[1:]:
+        token = raw_token.replace("~1", "/").replace("~0", "~")
+        if isinstance(current, dict):
+            if token not in current:
+                return False, None
+            current = current[token]
+        elif isinstance(current, list):
+            if not token.isdigit():
+                return False, None
+            index = int(token)
+            if index < 0 or index >= len(current):
+                return False, None
+            current = current[index]
+        else:
+            return False, None
+    return True, current
+
+
+def value_matches(value, profile_row, marker):
+    if profile_row["pointer"] == "/stream":
+        return value is True
+    if profile_row["field_type"] == "number":
+        return value == numeric_marker(marker)
+    if isinstance(value, str):
+        return marker in value
+    try:
+        text = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    except (TypeError, ValueError):
+        return False
+    return marker in text
+
+
+def pointer_hit(documents, pointer, profile_row, marker):
+    for doc in documents:
+        found, value = resolve_pointer(doc, pointer)
+        if found and value_matches(value, profile_row, marker):
+            return True
+    return False
+
+
+def parse_client(body):
+    if type(body) is not bytes:
+        return None
+    try:
+        text = body.decode("utf-8")
+    except UnicodeError:
+        return None
+    try:
+        doc = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(doc, (dict, list)):
+        return None
+    return doc
+
+
 def derive_row(profile_row, marker, obs):
     phase = profile_row["phase"]
+    fixture_id = profile_row["fixture_id"]
+    obligation = profile_row["obligation"]
     snapshot = obs["snapshot"]
-    hook_hit = marker_in_bodies(snapshot["hook_bodies"][phase], marker)
-    if phase == "request":
-        backend_hit = any(marker_text(p, marker) for p in snapshot["backend_payloads"] if p is not None)
-    else:
-        backend_hit = snapshot["upstream_count"] >= 1
-    client_hit = marker.encode("utf-8") in obs["client_body"]
     status = obs["http_status"]
     hook_count = snapshot["hook_counts"][phase]
-    if hook_hit and backend_hit and client_hit and 200 <= status <= 299:
-        measured = "observed_inspected"
-        detail = "marker reached hook, backend, and client with 2xx"
-    elif 400 <= status <= 599 and hook_count == 0 and not backend_hit and not client_hit:
-        measured = "unknown"
-        detail = "transport rejected before hook without native rejection code evidence"
-    elif (backend_hit or client_hit) and not hook_hit:
-        measured = "forwarded_uninspected"
-        detail = "marker reached backend or client without hook observation"
+    ok_2xx = 200 <= status <= 299
+    spy_maps = snapshot.get("hook_observed_maps", {}).get(phase, [])
+    detector_hit = any(isinstance(entry, dict) and entry.get(fixture_id) is True for entry in spy_maps)
+    client_bytes_hit = marker.encode("utf-8") in obs["client_body"]
+    if obligation in ("reject_unknown", "reject_unsupported"):
+        hook_any = marker_in_bodies(snapshot["hook_bodies"][phase], marker)
+        if phase == "request":
+            backend_any = any(marker_text(payload, marker) for payload in snapshot["backend_payloads"] if payload is not None)
+        else:
+            backend_any = snapshot["upstream_count"] >= 1
+        hook_observed = hook_any
+        backend_observed = backend_any
+        client_observed = client_bytes_hit
+        if 400 <= status <= 599 and hook_count == 0 and not backend_any and not client_bytes_hit:
+            measured = "unknown"
+            detail = "transport rejected before hook without native rejection code evidence"
+        elif hook_any or backend_any or client_bytes_hit:
+            measured = "forwarded_uninspected"
+            detail = "out-of-profile marker reached hook, backend, or client instead of pre-normalization rejection"
+        else:
+            measured = "unknown"
+            detail = "marker absent from hook and client views; pre-normalization rejection unproven"
+        preserved = None
     else:
-        measured = "unknown"
-        detail = "marker not correlated across hook, backend, and client"
-    preserved = client_hit if measured == "observed_inspected" else None
-    return {"phase": phase, "pointer": profile_row["pointer"], "fixture_id": profile_row["fixture_id"], "field_type": profile_row["field_type"], "obligation": profile_row["obligation"], "marker_sha256": hashlib.sha256(marker.encode("utf-8")).hexdigest(), "pre_normalization_present": True, "hook_observed": hook_hit, "backend_observed": backend_hit, "client_observed": client_hit, "gateway_http_status": status, "gateway_rejected_before_normalization": False, "gateway_rejection_code": None, "measured_status": measured, "detail": detail, "payload_preserved": preserved, "hook_calls": hook_count, "upstream_count": snapshot["upstream_count"]}
+        hook_pointer = profile_row.get("normalized_pointer") or profile_row["pointer"]
+        hook_hit = pointer_hit(snapshot["hook_bodies"][phase], hook_pointer, profile_row, marker)
+        if phase == "request":
+            live_payloads = [payload for payload in snapshot["backend_payloads"] if payload is not None]
+            backend_hit = pointer_hit(live_payloads, profile_row["pointer"], profile_row, marker)
+            client_hit = False
+        else:
+            backend_hit = snapshot["upstream_count"] >= 1
+            client_doc = parse_client(obs["client_body"])
+            client_hit = client_doc is not None and pointer_hit([client_doc], profile_row["pointer"], profile_row, marker)
+        hook_observed = hook_hit
+        backend_observed = backend_hit
+        client_observed = client_hit
+        downstream_ok = backend_hit and (client_hit if phase == "response" else True)
+        if hook_hit and downstream_ok and ok_2xx:
+            if obligation == "detector_text" and not detector_hit:
+                measured = "unknown"
+                detail = "hook carried marker at bound pointer but detector spy did not report it"
+            else:
+                measured = "observed_inspected"
+                if phase == "response":
+                    detail = "marker verified at bound pointer in hook, backend-call, and client views with 2xx"
+                else:
+                    detail = "marker verified at bound pointer in hook and backend views with 2xx"
+        elif 400 <= status <= 599 and hook_count == 0 and not backend_hit and not client_hit:
+            measured = "unknown"
+            detail = "transport rejected before hook without native rejection code evidence"
+        elif (backend_hit or client_hit) and not hook_hit:
+            measured = "forwarded_uninspected"
+            detail = "marker reached backend or client without hook observation at bound pointer"
+        else:
+            measured = "unknown"
+            detail = "marker not correlated at bound pointer across hook, backend, and client"
+        if measured == "observed_inspected":
+            preserved = True
+        else:
+            preserved = None
+    return {"phase": phase, "pointer": profile_row["pointer"], "fixture_id": fixture_id, "field_type": profile_row["field_type"], "obligation": obligation, "marker_sha256": hashlib.sha256(marker.encode("utf-8")).hexdigest(), "pre_normalization_present": True, "hook_observed": hook_observed, "backend_observed": backend_observed, "client_observed": client_observed, "detector_observed": detector_hit, "gateway_http_status": status, "gateway_rejected_before_normalization": False, "gateway_rejection_code": None, "measured_status": measured, "detail": detail, "payload_preserved": preserved, "hook_calls": hook_count, "upstream_count": snapshot["upstream_count"]}
+
+
+def _control_row(phase, pointer, obligation):
+    return {"phase": phase, "pointer": pointer, "normalized_pointer": pointer, "field_type": "string", "fixture_id": "control", "obligation": obligation}
 
 
 def controls_pass(obs, req_marker, resp_marker):
     snapshot = obs["snapshot"]
-    client = obs["client_body"]
     if obs["http_status"] != 200:
         return False
     if snapshot["hook_counts"] != {"request": 1, "response": 1}:
         return False
     if snapshot["upstream_count"] != 1:
         return False
-    if not marker_in_bodies(snapshot["hook_bodies"]["request"], req_marker):
+    req_row = _control_row("request", "/messages/1/content", "detector_text")
+    if not pointer_hit(snapshot["hook_bodies"]["request"], req_row["pointer"], req_row, req_marker):
         return False
-    if not any(marker_text(p, req_marker) for p in snapshot["backend_payloads"] if p is not None):
+    live_payloads = [payload for payload in snapshot["backend_payloads"] if payload is not None]
+    if not pointer_hit(live_payloads, req_row["pointer"], req_row, req_marker):
         return False
-    if req_marker.encode("utf-8") not in client:
+    req_spy = snapshot.get("hook_observed_maps", {}).get("request", [])
+    if not any(isinstance(entry, dict) and entry.get("control") is True for entry in req_spy):
         return False
-    if resp_marker.encode("utf-8") not in client:
+    resp_row = _control_row("response", "/choices/0/message/content", "detector_text")
+    if not pointer_hit(snapshot["hook_bodies"]["response"], resp_row["pointer"], resp_row, resp_marker):
+        return False
+    client_doc = parse_client(obs["client_body"])
+    if client_doc is None or not pointer_hit([client_doc], resp_row["pointer"], resp_row, resp_marker):
+        return False
+    resp_spy = snapshot.get("hook_observed_maps", {}).get("response", [])
+    if not any(isinstance(entry, dict) and entry.get("control-response") is True for entry in resp_spy):
         return False
     return True
 
@@ -353,7 +470,7 @@ def run(binary, report_path, timeout=15):
                 resp_marker = new_marker()
                 payload = base_request()
                 payload["messages"][1]["content"] = "prefix " + req_marker + " suffix"
-                state.reset({"control": req_marker}, {"/choices/0/message/content": resp_marker})
+                state.reset({"control": req_marker, "control-response": resp_marker}, {"/choices/0/message/content": resp_marker})
                 control_obs = observe_case(url, state, payload, timeout=timeout)
                 control_ok = controls_pass(control_obs, req_marker, resp_marker)
                 if not control_ok:

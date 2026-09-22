@@ -118,45 +118,68 @@ class RequestEmbedding(unittest.TestCase):
         validate_route(config["binds"][0]["listeners"][0]["routes"][0])
 
 
-def fake_obs(*, status, hook_bodies, backend_payloads, client_body, hook_counts, upstream=1):
-    return {"http_status": status, "client_body": client_body, "elapsed_ms": 1.0, "snapshot": {"hook_counts": hook_counts, "hook_bodies": hook_bodies, "backend_payloads": backend_payloads, "upstream_count": upstream}}
+def fake_obs(*, status, hook_bodies, backend_payloads, client_body, hook_counts, upstream=1, maps=None):
+    snapshot = {"hook_counts": hook_counts, "hook_bodies": hook_bodies, "backend_payloads": backend_payloads, "upstream_count": upstream, "hook_observed_maps": maps if maps is not None else {"request": [], "response": []}}
+    return {"http_status": status, "client_body": client_body, "elapsed_ms": 1.0, "snapshot": snapshot}
 
 
 class DeriveRow(unittest.TestCase):
     def row(self, phase, pointer, obligation="detector_text"):
-        return {"phase": phase, "pointer": pointer, "fixture_id": "f", "field_type": "string", "obligation": obligation}
+        return {"phase": phase, "pointer": pointer, "normalized_pointer": pointer, "fixture_id": "f", "field_type": "string", "obligation": obligation}
 
-    def test_inspected_request_row(self):
+    def test_inspected_request_row_needs_no_client_echo(self):
         marker = "A" * 32
-        body = {"messages": [{"content": marker}]}
-        obs = fake_obs(status=200, hook_bodies={"request": [body], "response": []}, backend_payloads=[{"messages": [{"content": marker}]}], client_body=("{\"x\":\"" + marker + "\"}").encode(), hook_counts={"request": 1, "response": 0})
+        hook_body = {"messages": [{"role": "system", "content": "x"}, {"role": "user", "content": "prefix " + marker + " suffix"}]}
+        backend = {"model": "fixture", "messages": [{"role": "system", "content": "x"}, {"role": "user", "content": "prefix " + marker + " suffix"}]}
+        obs = fake_obs(status=200, hook_bodies={"request": [hook_body], "response": []}, backend_payloads=[backend], client_body=b"{}", hook_counts={"request": 1, "response": 0}, maps={"request": [{"f": True}], "response": []})
         derived = probe.derive_row(self.row("request", "/messages/1/content"), marker, obs)
         self.assertEqual(derived["measured_status"], "observed_inspected")
+        self.assertTrue(derived["detector_observed"] is True)
         self.assertTrue(derived["payload_preserved"] is True)
-        self.assertFalse(derived["gateway_rejected_before_normalization"] is True)
+        self.assertFalse(derived["client_observed"] is True)
+
+    def test_misplaced_marker_is_not_inspected(self):
+        marker = "B" * 32
+        hook_body = {"messages": [{"content": marker}]}
+        backend = {"messages": [{"content": marker}]}
+        obs = fake_obs(status=200, hook_bodies={"request": [hook_body], "response": []}, backend_payloads=[backend], client_body=b"{}", hook_counts={"request": 1, "response": 0}, maps={"request": [{"f": True}], "response": []})
+        derived = probe.derive_row(self.row("request", "/messages/1/content"), marker, obs)
+        self.assertNotEqual(derived["measured_status"], "observed_inspected")
+
+    def test_spy_miss_blocks_inspected(self):
+        marker = "C" * 32
+        hook_body = {"messages": [{"role": "system", "content": "x"}, {"content": "prefix " + marker + " suffix"}]}
+        backend = {"messages": [{"role": "system", "content": "x"}, {"content": "prefix " + marker + " suffix"}]}
+        obs = fake_obs(status=200, hook_bodies={"request": [hook_body], "response": []}, backend_payloads=[backend], client_body=b"{}", hook_counts={"request": 1, "response": 0}, maps={"request": [{"f": False}], "response": []})
+        derived = probe.derive_row(self.row("request", "/messages/1/content"), marker, obs)
+        self.assertEqual(derived["measured_status"], "unknown")
+        self.assertIn("detector spy", derived["detail"])
 
     def test_forwarded_without_hook(self):
-        marker = "B" * 32
+        marker = "D" * 32
+        row = {"phase": "request", "pointer": "/top_unknown", "normalized_pointer": None, "fixture_id": "f", "field_type": "unknown", "obligation": "reject_unknown"}
         obs = fake_obs(status=200, hook_bodies={"request": [{"messages": []}], "response": []}, backend_payloads=[{"top_unknown": marker}], client_body=b"{}", hook_counts={"request": 1, "response": 0})
-        derived = probe.derive_row(self.row("request", "/top_unknown", obligation="reject_unknown"), marker, obs)
+        derived = probe.derive_row(row, marker, obs)
         self.assertEqual(derived["measured_status"], "forwarded_uninspected")
 
     def test_silent_drop_is_unknown_never_rejected(self):
-        marker = "C" * 32
+        marker = "E" * 32
+        row = {"phase": "request", "pointer": "/top_unknown", "normalized_pointer": None, "fixture_id": "f", "field_type": "unknown", "obligation": "reject_unknown"}
         obs = fake_obs(status=200, hook_bodies={"request": [{"messages": []}], "response": []}, backend_payloads=[{"messages": []}], client_body=b"{}", hook_counts={"request": 1, "response": 0})
-        derived = probe.derive_row(self.row("request", "/top_unknown", obligation="reject_unknown"), marker, obs)
+        derived = probe.derive_row(row, marker, obs)
         self.assertEqual(derived["measured_status"], "unknown")
         self.assertIsNone(derived["gateway_rejection_code"])
 
     def test_transport_reject_without_code_is_unknown(self):
-        marker = "D" * 32
+        marker = "F" * 32
+        row = {"phase": "request", "pointer": "/top_unknown", "normalized_pointer": None, "fixture_id": "f", "field_type": "unknown", "obligation": "reject_unknown"}
         obs = fake_obs(status=422, hook_bodies={"request": [], "response": []}, backend_payloads=[], client_body=b"{}", hook_counts={"request": 0, "response": 0}, upstream=0)
-        derived = probe.derive_row(self.row("request", "/top_unknown", obligation="reject_unknown"), marker, obs)
+        derived = probe.derive_row(row, marker, obs)
         self.assertEqual(derived["measured_status"], "unknown")
         self.assertIn("without native rejection code", derived["detail"])
 
     def test_never_emits_ingress_rejected(self):
-        marker = "E" * 32
+        marker = "0A1B" * 8
         bodies = [{"messages": []}]
         for status, hook_counts in ((200, {"request": 1, "response": 0}), (403, {"request": 0, "response": 0}), (500, {"request": 1, "response": 0})):
             obs = fake_obs(status=status, hook_bodies={"request": bodies, "response": []}, backend_payloads=bodies, client_body=b"{}", hook_counts=hook_counts)
@@ -164,31 +187,68 @@ class DeriveRow(unittest.TestCase):
             self.assertIn(derived["measured_status"], ("observed_inspected", "forwarded_uninspected", "unknown"))
 
     def test_inspected_response_row(self):
-        marker = "F" * 32
-        body = {"choices": [{"message": {"content": marker}}]}
-        obs = fake_obs(status=200, hook_bodies={"request": [], "response": [body]}, backend_payloads=[], client_body=("prefix " + marker).encode(), hook_counts={"request": 0, "response": 1})
+        marker = "1122" * 8
+        hook_body = {"choices": [{"message": {"content": "prefix " + marker + " suffix"}}]}
+        client = json.dumps({"choices": [{"message": {"content": "prefix " + marker + " suffix"}}]}).encode()
+        obs = fake_obs(status=200, hook_bodies={"request": [], "response": [hook_body]}, backend_payloads=[], client_body=client, hook_counts={"request": 0, "response": 1}, maps={"request": [], "response": [{"f": True}]})
         derived = probe.derive_row(self.row("response", "/choices/0/message/content"), marker, obs)
         self.assertEqual(derived["measured_status"], "observed_inspected")
 
-
     def test_response_row_without_backend_call_is_not_inspected(self):
-        marker = "G" * 32
-        body = {"choices": [{"message": {"content": marker}}]}
-        obs = fake_obs(status=200, hook_bodies={"request": [], "response": [body]}, backend_payloads=[], client_body=("prefix " + marker).encode(), hook_counts={"request": 0, "response": 1}, upstream=0)
+        marker = "3344" * 8
+        hook_body = {"choices": [{"message": {"content": marker}}]}
+        client = ("prefix " + marker).encode()
+        obs = fake_obs(status=200, hook_bodies={"request": [], "response": [hook_body]}, backend_payloads=[], client_body=client, hook_counts={"request": 0, "response": 1}, upstream=0, maps={"request": [], "response": [{"f": True}]})
         derived = probe.derive_row(self.row("response", "/choices/0/message/content"), marker, obs)
         self.assertFalse(derived["backend_observed"] is True)
         self.assertNotEqual(derived["measured_status"], "observed_inspected")
 
+    def test_response_misplaced_marker_is_not_inspected(self):
+        marker = "5566" * 8
+        hook_body = {"choices": [{"message": {"content": marker}}]}
+        client = json.dumps({"id": marker}).encode()
+        obs = fake_obs(status=200, hook_bodies={"request": [], "response": [hook_body]}, backend_payloads=[], client_body=client, hook_counts={"request": 0, "response": 1}, maps={"request": [], "response": [{"f": True}]})
+        derived = probe.derive_row(self.row("response", "/choices/0/message/content"), marker, obs)
+        self.assertNotEqual(derived["measured_status"], "observed_inspected")
+
 
 class ControlsCheck(unittest.TestCase):
-    def test_controls_pass_and_fail(self):
+    def good_obs(self, req, resp):
+        req_hook = {"messages": [{"role": "system", "content": "Preserve this instruction."}, {"role": "user", "content": req}, {"role": "user", "content": "Third control text without markers."}]}
+        backend = {"model": "fixture", "stream": False, "messages": req_hook["messages"], "temperature": 0}
+        resp_hook = {"choices": [{"message": {"content": resp}}]}
+        client = json.dumps({"id": "fixture", "choices": [{"message": {"content": resp}}]}).encode()
+        maps = {"request": [{"control": True, "control-response": False}], "response": [{"control": False, "control-response": True}]}
+        return fake_obs(status=200, hook_bodies={"request": [req_hook], "response": [resp_hook]}, backend_payloads=[backend], client_body=client, hook_counts={"request": 1, "response": 1}, maps=maps)
+
+    def test_controls_pass_without_request_client_echo(self):
         req, resp = "R" * 32, "S" * 32
-        good = fake_obs(status=200, hook_bodies={"request": [{"messages": [req]}], "response": [[resp]]}, backend_payloads=[{"messages": [req]}], client_body=(req + resp).encode(), hook_counts={"request": 1, "response": 1})
-        self.assertTrue(probe.controls_pass(good, req, resp))
-        bad_status = copy.deepcopy(good)
+        self.assertTrue(probe.controls_pass(self.good_obs(req, resp), req, resp))
+
+    def test_controls_reject_misplaced_request_marker(self):
+        req, resp = "R" * 32, "S" * 32
+        obs = self.good_obs(req, resp)
+        obs["snapshot"]["hook_bodies"]["request"] = [{"messages": [{"content": req}]}]
+        self.assertFalse(probe.controls_pass(obs, req, resp))
+
+    def test_controls_reject_missing_response_client_marker(self):
+        req, resp = "R" * 32, "S" * 32
+        obs = self.good_obs(req, resp)
+        obs["client_body"] = json.dumps({"id": "fixture", "choices": []}).encode()
+        self.assertFalse(probe.controls_pass(obs, req, resp))
+
+    def test_controls_reject_spy_miss(self):
+        req, resp = "R" * 32, "S" * 32
+        obs = self.good_obs(req, resp)
+        obs["snapshot"]["hook_observed_maps"] = {"request": [{"control": False}], "response": [{"control-response": True}]}
+        self.assertFalse(probe.controls_pass(obs, req, resp))
+
+    def test_controls_reject_bad_status_and_counts(self):
+        req, resp = "R" * 32, "S" * 32
+        bad_status = self.good_obs(req, resp)
         bad_status["http_status"] = 500
         self.assertFalse(probe.controls_pass(bad_status, req, resp))
-        bad_counts = copy.deepcopy(good)
+        bad_counts = self.good_obs(req, resp)
         bad_counts["snapshot"]["hook_counts"] = {"request": 0, "response": 1}
         self.assertFalse(probe.controls_pass(bad_counts, req, resp))
 
