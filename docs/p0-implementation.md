@@ -60,6 +60,22 @@ docker compose -f deploy/compose/compose.yaml --profile cpu-e2e run --rm \
 
 同project不要並行；CI用run-id/attempt區分project。`down -v`會刪evidence，只在取回後明確執行，不system-wide prune。GitHub Actions同時跑native binary與Compose診斷，結果以實際job為準。第一輪觀察见[p0-ci-observation.md](p0-ci-observation.md)；新runner/hash需重新執行。
 
+
+## Field coverage probe 與 PromptGuard 測量鉤子
+
+`agentguard/field_profile.py` 凍結 `text-nonstream-v1` 的封閉欄位集合：非串流文字 `/v1/chat/completions` 的 request／response 欄位（不同 message index 與 choice 以可區分合成資料覆蓋），以及 profile 外的 tool calls、圖片 content part、provider extension 與未知欄位。後者必須在 normalize 前拒絕，不能靜默轉送。
+
+`agentguard/promptguard.py` 是測量用的最小確定性鉤子，不是生產 guard：嚴格驗證 webhook envelope，逐位元組記錄合成 marker 是否到達 hook body，合法 envelope 一律 allow 以便觀察後端與 client 傳播。它不產生 PII、secret 或 injection  verdict；`detector_observed` 僅表示該欄位的 marker 位元組出現在 hook body。envelope 畸形時 fail-closed 拒絕。
+
+```bash
+python3 -m tools.fetch_gateway --output /tmp/agentgateway-v1.5.0
+python3 -m tools.field_coverage_probe --gateway-bin /tmp/agentgateway-v1.5.0   --report reports/field-coverage.json
+```
+
+執行真正的 checksum-pinned Gateway 與 loopback hook／backend fixture：每個欄位送一個全新的隨機 marker，關聯 ingress、hook、backend 與 client 四點觀察。量測結果誠實記錄為 `observed_inspected`、`forwarded_uninspected` 或 `unknown`；沒有原生 Gateway 拒絕證據就不會出現 `ingress_rejected`，transport 層拒絕若缺原生拒絕碼只記為 `unknown` 並附註。報告的 `coverage_gate`、`p0_release_gate` 與 `asr_fpr` 恆為 `NOT_EVALUATED`。Exit 0 只表示量測完成且正向 control 端到端成功，不表示受保護；control 失敗回 1，binary／config／啟動錯誤回 2。
+
+此切片先交付可信的測量工具，不要求把缺口修到綠燈；`forwarded_uninspected` 與 `unknown` 保留為 findings。CI 接線、Compose 路徑、每 row 獨立 Gateway event／log-slice 綁定、normalize 前拒絕的原生執行，以及 activation 整合仍是後續工作。
+
 ## 尚未完成
 
-Gateway parser patch與protected acceptance、G0-CONTEXT ingress/CEL、G0-COVERAGE native／Compose runtime matrix與activation、G0-DEADLINE故障suite；正式PromptGuard/ExtMCP adapters、PII/secret detectors、MCP error sanitizer、Policy Studio、vLLM、observability provisioning均未由此切片完成。Issue #2保持open，不能以診斷PR通過代替。
+Gateway parser patch與protected acceptance、G0-CONTEXT ingress/CEL、G0-COVERAGE 每 row 事件綁定、原生拒絕執行、Compose runtime matrix與activation、G0-DEADLINE故障suite；正式PromptGuard/ExtMCP adapters、PII/secret detectors、MCP error sanitizer、Policy Studio、vLLM、observability provisioning均未由此切片完成。Issue #2保持open，不能以診斷PR通過代替。
