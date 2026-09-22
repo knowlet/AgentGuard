@@ -2,10 +2,10 @@
 #
 # This is a measurement spy, not a production guard. It strictly validates
 # the Gateway webhook envelope, records which synthetic markers reached the
-# hook body byte for byte, and allows well-formed envelopes so the probe can
+# text fields byte for byte, and allows well-formed envelopes so the probe can
 # observe backend and client propagation. It produces no PII, secret, or
 # injection verdicts. detector_observed is true only when the exact marker
-# bytes for that field are present in the normalized hook body.
+# text and pointer were visited by the text scanner in this hook event.
 # Malformed envelopes are rejected fail-closed with HTTP 403 semantics.
 from __future__ import annotations
 
@@ -47,22 +47,28 @@ def parse_envelope(raw: bytes):
     return doc
 
 
-def _canonical_text(value: Any) -> str:
-    try:
-        return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
-    except (TypeError, ValueError):
-        return ""
+def text_inputs(phase: str, body: Any):
+    """Visit supported detector inputs, keeping each text's normalized pointer."""
+    if not isinstance(body, dict):
+        return
+    entries = body.get("messages" if phase == "request" else "choices")
+    if not isinstance(entries, list):
+        return
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            continue
+        message = entry if phase == "request" else entry.get("message")
+        if isinstance(message, dict) and type(message.get("content")) is str:
+            pointer = (f"/messages/{index}/content" if phase == "request"
+                       else f"/choices/{index}/message/content")
+            yield pointer, message["content"]
 
 
-def find_markers(body: Any, markers: dict) -> dict:
-    text = _canonical_text(body)
-    found = {}
-    for fixture_id, marker in markers.items():
-        if type(marker) is str and marker and marker in text:
-            found[fixture_id] = True
-        else:
-            found[fixture_id] = False
-    return found
+def find_markers(phase: str, body: Any, targets: dict) -> dict:
+    inputs = dict(text_inputs(phase, body))
+    return {fixture_id: (isinstance(target, dict) and type(target.get("text")) is str
+                        and inputs.get(target.get("pointer")) == target["text"])
+            for fixture_id, target in targets.items()}
 
 
 def decide(phase: str, envelope: Any, markers: dict):
@@ -70,7 +76,7 @@ def decide(phase: str, envelope: Any, markers: dict):
         raise PromptGuardRejected("HOOK_PHASE_INVALID")
     if type(envelope) is not dict or "body" not in envelope:
         raise PromptGuardRejected("HOOK_ENVELOPE_INVALID")
-    observed = find_markers(envelope["body"], markers)
+    observed = find_markers(phase, envelope["body"], markers)
     return True, ALLOW_REASON, observed
 
 

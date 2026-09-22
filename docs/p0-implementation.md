@@ -33,7 +33,7 @@ agentguard.coverage 提供 G0-COVERAGE 的外部 matrix／evidence preflight pri
 
 Row pointer 是非空的 field-level JSON Pointer；document root `""` 不屬於這個 contract，`/` 代表空名稱 member。`lossiness=none` 的 inspected rows 在同一 phase 不得共用 normalized pointer。
 
-validate_coverage_route 只做 route/context/coverage preflight，不啟用 route；它以 deployed config resolve 出的 actual route 作為唯一驗證與 digest authority，caller route 必須與其 canonical bytes 完全一致。這個 slice 沒有 native 或 Compose field-coverage runner，所有通過結果都回傳 runtime_status=NOT_EVALUATED；人工或 synthetic artifact 不能把 G0-COVERAGE 標成 PASS。完整 runtime matrix、每個 row 對應的 Gateway event／log slice、log artifact 的獨立產生與 activation caller 仍是後續工作。
+validate_coverage_route 只做 route/context/coverage preflight，不啟用 route；它以 deployed config resolve 出的 actual route 作為唯一驗證與 digest authority，caller route 必須與其 canonical bytes 完全一致。這個 preflight API 不執行 native 或 Compose field-coverage runner，所有通過結果都回傳 runtime_status=NOT_EVALUATED；人工或 synthetic artifact 不能把 G0-COVERAGE 標成 PASS。完整 runtime matrix、每個 row 對應的 Gateway event／log slice、log artifact 的獨立產生與 activation caller 仍是後續工作。
 
 ## Evidence preflight
 
@@ -65,16 +65,22 @@ docker compose -f deploy/compose/compose.yaml --profile cpu-e2e run --rm \
 
 `agentguard/field_profile.py` 凍結 `text-nonstream-v1` 的封閉欄位集合：非串流文字 `/v1/chat/completions` 的 request／response 欄位（不同 message index 與 choice 以可區分合成資料覆蓋），以及 profile 外的 tool calls、圖片 content part、provider extension 與未知欄位。後者必須在 normalize 前拒絕，不能靜默轉送。
 
-`agentguard/promptguard.py` 是測量用的最小確定性鉤子，不是生產 guard：嚴格驗證 webhook envelope，逐位元組記錄合成 marker 是否到達 hook body，合法 envelope 一律 allow 以便觀察後端與 client 傳播。它不產生 PII、secret 或 injection  verdict；`detector_observed` 僅表示該欄位的 marker 位元組出現在 hook body。envelope 畸形時 fail-closed 拒絕。
+`agentguard/promptguard.py` 是測量用的最小確定性鉤子。它拒絕 malformed JSON、duplicate keys、非 JSON 常數與缺少 body 的 envelope；符合此最小 envelope 契約的輸入一律 allow，以便觀察 backend 與 client 傳播。text scanner 只遍歷 request messages／response choices 的文字 content，按 normalized pointer 與完整預期文字產生 spy 結果，不掃描 metadata 或把文件任何位置的 marker 當成文字檢查。它不產生 PII、secret 或 injection verdict；`detector_observed` 只證明本次事件的測量 spy 掃描到目標文字。
 
 ```bash
 python3 -m tools.fetch_gateway --output /tmp/agentgateway-v1.5.0
-python3 -m tools.field_coverage_probe --gateway-bin /tmp/agentgateway-v1.5.0   --report reports/field-coverage.json
+python3 -m tools.field_coverage_probe --gateway-bin /tmp/agentgateway-v1.5.0 --report reports/field-coverage.json
 ```
 
-執行真正的 checksum-pinned Gateway 與 loopback hook／backend fixture：每個欄位送一個全新的隨機 marker，關聯 ingress、hook、backend 與 client 四點觀察。判定一律綁定 JSON pointer 解析（`normalized_pointer` 對 hook、`pointer` 對 backend／client），`detector_text` 欄位另需 detector spy 回報：marker 只出現在文件別處、或 hook 有而 spy 沒有，都不能算 `observed_inspected`。量測結果誠實記錄為 `observed_inspected`、`forwarded_uninspected` 或 `unknown`；沒有原生 Gateway 拒絕證據就不會出現 `ingress_rejected`，transport 層拒絕若缺原生拒絕碼只記為 `unknown` 並附註。request 欄位不要求 client 回音（topology 上 client 是來源不是匯點），response 欄位則需 hook、已呼叫的 backend 與 client 三方一致。報告的 `coverage_gate`、`p0_release_gate` 與 `asr_fpr` 恆為 `NOT_EVALUATED`。Exit 0 只表示量測完成且正向 control 端到端成功，不表示受保護；control 失敗回 1，binary／config／啟動錯誤回 2。
+runner 使用 checksum-pinned stock Gateway 與 loopback hook／backend fixture。文字欄位使用新隨機 marker 及 prefix／suffix；metadata 使用合法型別和值（temperature=0.75、choice index=0、system／user／assistant role、finish_reason=length）。`stream=true` 是 profile 外的拒絕案例，`stream=false` 由正向 control 使用。圖片案例的實際 pointer 為 `/messages/1/content/1`。
 
-此切片先交付可信的測量工具，不要求把缺口修到綠燈；`forwarded_uninspected` 與 `unknown` 保留為 findings。CI 接線、Compose 路徑、每 row 獨立 Gateway event／log-slice 綁定、normalize 前拒絕的原生執行，以及 activation 整合仍是後續工作。
+request 比對實際 ingress、hook 與 backend 收到的欄位，不要求 client 回音；response 比對 backend 實際送出的欄位、hook 與 client。來源存在性從實際紀錄解析，不由 fixture 宣告或呼叫計數推定。判定以 `pointer`／`normalized_pointer` 解析目標，精確比對完整 JSON 值、型別、陣列順序與祖先容器型別／長度，保留 object key 順序無關性。`structure` row 比對整個目標陣列；`type_value` row 不要求 NLP detector；`detector_text` row 另要求同一個 hook 事件的 spy 成功。缺少或多筆事件不拼湊為成功。`payload_preserved` 限定於該 row 的目標值與上述結構約束，不代表其他 sibling 欄位或整份 payload 已獲證明。
+
+量測結果保留 `observed_inspected`、`forwarded_uninspected` 與 `unknown`。缺少 native Gateway 拒絕碼時，即使 HTTP 拒絕也不能宣稱 `ingress_rejected`；來源只有 backend response、但 hook/client 沒收到的未知欄位亦不能誤報 forwarded。Stock hook 省略的 metadata 與 normalization loss 必須保留為 findings。`coverage_gate`、`p0_release_gate` 與 `asr_fpr` 恆為 `NOT_EVALUATED`。Exit 0 與 `measurement_status=COMPLETED` 只表示量測完成且正向 control 成功；control 失敗回 1，binary／config／啟動錯誤回 2。
+
+報告同時保存 binary/config/profile/runner/hook digests、逐 row 結果、Gateway log 與 `.observations.json` 原始合成資料。後者保留 ingress、hook body、spy 結果、backend request/response、HTTP 狀態與 client 原始 bytes（hex），並以 SHA-256 綁定報告。`p0-stock-diagnostic` CI 在 x86 runner 實際執行本工具，要求 control 成功、21 rows、22 筆 observations（含 control）、artifact digest 相符及各 gate 仍為 NOT_EVALUATED；報告、log 與 observations 會一併上傳。
+
+Compose field-coverage 路徑、每 row 獨立 Gateway event／log-slice 綁定、normalize 前拒絕的原生執行，以及 activation 整合仍是後續工作。
 
 ## 尚未完成
 

@@ -34,6 +34,30 @@ jobs:
         run: python3 -m tools.fetch_gateway --output "$RUNNER_TEMP/agentgateway"
       - name: Reproduce stock wire behavior (NOT a protected gate)
         run: python3 -m tools.gateway_probe --gateway-bin "$RUNNER_TEMP/agentgateway" --report reports/gateway-stock.json
+      - name: Measure stock field coverage (NOT a protected gate)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m tools.field_coverage_probe --gateway-bin "$RUNNER_TEMP/agentgateway" --report reports/field-coverage.json
+          python3 - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          report_path = Path("reports/field-coverage.json")
+          report = json.loads(report_path.read_text())
+          assert report["control_passed"] is True
+          assert report["measurement_status"] == "COMPLETED"
+          assert len(report["rows"]) == 21
+          observations_bytes = report_path.with_name(report["observations_file"]).read_bytes()
+          assert hashlib.sha256(observations_bytes).hexdigest() == report["observations_sha256"]
+          observations = json.loads(observations_bytes)
+          assert isinstance(observations, list) and len(observations) == 22
+          for gate in ("coverage_gate", "p0_release_gate", "asr_fpr"):
+              assert report[gate] == "NOT_EVALUATED", gate
+          assert Path("reports/field-coverage.gateway.log").stat().st_size > 0
+          print("FIELD_COVERAGE_EVIDENCE_VERIFIED: measurement completed; gates NOT_EVALUATED")
+          PY
       - name: Validate and run isolated Compose diagnostic
         run: |
           docker compose -f deploy/compose/compose.yaml --profile cpu-e2e config --quiet
@@ -55,9 +79,18 @@ jobs:
       - name: Preserve diagnostic evidence in job log
         if: always()
         run: |
-          for f in reports/gateway-stock.json reports/gateway-stock.gateway.log; do
+          for f in reports/gateway-stock.json reports/gateway-stock.gateway.log \
+                   reports/field-coverage.json reports/field-coverage.gateway.log; do
             if [ -f "$f" ]; then
               printf '\n=== %s ===\n' "$f"
               cat "$f"
             fi
           done
+      - name: Upload stock diagnostic evidence, not release attestations
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: stock-diagnostic-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: reports/
+          if-no-files-found: error
+          retention-days: 30
