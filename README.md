@@ -14,6 +14,7 @@ AgentGuard 是以 **AgentGateway 作為 enforcement plane** 的 protocol-aware a
 | 雙向 context | 原始 request snapshot 的 CEL mapping、37 組 request/response 案例、每階段決策與 payload 保存驗證 | 不是 authentication、任意欄位 coverage 或 route activation |
 | Guard deadline | 宣告閘門（stage／reserve／margin 需小於 10 秒有效 Gateway timeout）、9 組真實 Gateway below／at／above budget 案例（含提前斷線負向 control）、以單次呼叫的 Gateway log slice 區分 guard 決策、真正 timeout 與 transport 故障 | 不是 latency SLO、detector 延遲、queue／backpressure／cancel，也不是完整 G0-DEADLINE |
 | Evidence preflight | artifact hash、external field matrix、雙 phase row contract、完整 Gateway config／route digest、native evidence 欄位與 freshness；runtime 狀態固定為 NOT_EVALUATED | 不是 native／Compose coverage runner、完整 policy compiler、簽章驗證服務或 route activation |
+| Native field measurement | `text-nonstream-v1` 的 21 列 request／response 欄位、真實 stock Gateway、pointer-bound observations 與 deterministic PromptGuard spy；[runner](tools/field_coverage_probe.py) 已接入 stock CI | 只量測欄位傳遞與 spy 是否看到文字，不是 detector 效果、Compose coverage 或 normalize 前 enforcement；所有 gates 保持 NOT_EVALUATED |
 | 統計與結果契約 | Wilson CI、固定樣本規劃、獨立 availability-fault 記帳與回歸測試 | 不是已執行的模型 benchmark 或完整 joint release evaluator |
 
 ### CPU 測試
@@ -24,10 +25,13 @@ AgentGuard 是以 **AgentGateway 作為 enforcement plane** 的 protocol-aware a
 python3 -m unittest discover -s tests -v
 python3 -m tools.fetch_gateway --output /tmp/agentgateway-v1.5.0
 python3 -m tools.gateway_probe --gateway-bin /tmp/agentgateway-v1.5.0 --report reports/gateway-stock.json
+python3 -m tools.field_coverage_probe --gateway-bin /tmp/agentgateway-v1.5.0 --report reports/field-coverage.json
 docker compose -f deploy/compose/compose.yaml --profile cpu-e2e run --build --rm diagnostic
 ```
 
 Stock 結果應為 `diagnostic_status=VULNERABILITY_REPRODUCED`、`protected_wire_gate=FAIL`。不能用 stock workflow 的綠燈替代 protected release gate。
+
+Field probe 的 exit 0 只代表量測完成；`coverage_gate`、`p0_release_gate` 與 `asr_fpr` 均為 `NOT_EVALUATED`。它保留 `forwarded_uninspected`／`unknown` 等缺口，不會把 marker 抵達或遺失改判為已防護。上述 Compose 命令僅執行 stock wire diagnostic，不執行 field probe。
 
 ### 下游 patch 與真實驗收
 
@@ -46,7 +50,7 @@ ASR / FPR:            NOT_EVALUATED
 
 PromptGuard 將保護 LLM request/response、PII、secret 與 deterministic decisions；MCPGuard 將透過 ExtMCP 執行 method/tool authorization、tools/list mutation。Assurance 是隔離測試平面；Policy Studio 為 FastAPI control plane＋browser，負責 catalog、表單、驗證、模擬與版本發布。Observability 規劃使用 Prometheus、Loki、Grafana provisioning、Alloy；Guard JSONL 與 Gateway OTLP access logs 分流。這些完整服務、detectors 與 UI 尚未交付。
 
-P0 仍缺：可信身分、G0-COVERAGE 的 native／Compose runtime matrix 與 runner、normalize 前封閉原始 schema 的實際 Gateway enforcement、queue／backpressure／cancel／durable audit 的實際故障，以及 route activation。缺 evidence 的 strict policy 不可 activate；agentguard.coverage 的 preflight 結果不會把 runtime gate 標成 PASS，也不會把整份 Gateway artifact 當成每個 row 的獨立 runtime event 綁定。P2 另須驗證 MCP error sanitizer；backend attestation 永遠不等於 protected。
+P0 仍缺：可信身分、G0-COVERAGE 的完整受保護 runtime matrix（現有 native runner 僅作 stock measurement，Compose coverage 尚缺）、normalize 前封閉原始 schema 的實際 Gateway enforcement、queue／backpressure／cancel／durable audit 的實際故障，以及 route activation。缺 evidence 的 strict policy 不可 activate；agentguard.coverage 的 preflight 結果不會把 runtime gate 標成 PASS，也不會把整份 Gateway artifact 當成每個 row 的獨立 runtime event 綁定。P2 另須驗證 MCP error sanitizer；backend attestation 永遠不等於 protected。
 
 Detector 提供 evidence，不能授權；tools/list 隱藏不能替代 tools/call 授權；unknown／缺 context／缺 evidence 不靜默 allow。
 
