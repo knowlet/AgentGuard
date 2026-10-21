@@ -29,7 +29,7 @@ from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError
-from urllib.request import ProxyHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from agentguard import field_profile
 from agentguard import promptguard
@@ -230,10 +230,16 @@ def probe_gateway_config(port, target):
     return config
 
 
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # Evidence belongs to the checked Gateway listener, never a redirect target.
+        return None
+
+
 def observe_case(url, state, payload, timeout=15):
     start = time.monotonic()
     data = json.dumps(payload, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
-    opener = build_opener(ProxyHandler({}))
+    opener = build_opener(ProxyHandler({}), NoRedirect())
     request = Request(url, data=data, headers={"Content-Type": "application/json"})
     try:
         response = opener.open(request, timeout=timeout)
