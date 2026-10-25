@@ -409,6 +409,62 @@ class HTTPObservations(unittest.TestCase):
                 thread.join(timeout=5)
 
 
+class RedirectEvidence(unittest.TestCase):
+    def test_redirect_preserves_original_status_bytes_and_never_visits_target(self):
+        hits = []
+
+        class Target(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                hits.append(self.path)
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"unrelated listener response")
+
+        target = ThreadingHTTPServer(("127.0.0.1", 0), Target)
+        target_thread = threading.Thread(target=target.serve_forever,
+                                         kwargs={"poll_interval": 0.01}, daemon=True)
+        target_thread.start()
+        try:
+            for status in (301, 302, 303, 307, 308):
+                with self.subTest(status=status):
+                    hits.clear()
+                    raw = b"original gateway redirect body"
+
+                    class Gateway(BaseHTTPRequestHandler):
+                        def log_message(self, *args):
+                            pass
+
+                        def do_POST(self):
+                            self.rfile.read(int(self.headers["Content-Length"]))
+                            self.send_response(status)
+                            self.send_header("Location", f"http://127.0.0.1:{target.server_port}/replacement")
+                            self.send_header("Content-Length", str(len(raw)))
+                            self.end_headers()
+                            self.wfile.write(raw)
+
+                    gateway = ThreadingHTTPServer(("127.0.0.1", 0), Gateway)
+                    thread = threading.Thread(target=gateway.serve_forever,
+                                              kwargs={"poll_interval": 0.01}, daemon=True)
+                    thread.start()
+                    try:
+                        obs = probe.observe_case(f"http://127.0.0.1:{gateway.server_port}/v1/chat/completions",
+                                                 probe.ProbeState(), probe.base_request())
+                        self.assertEqual(obs["http_status"], status)
+                        self.assertEqual(obs["client_body"], raw)
+                        self.assertEqual(hits, [])
+                    finally:
+                        gateway.shutdown()
+                        gateway.server_close()
+                        thread.join(timeout=5)
+        finally:
+            target.shutdown()
+            target.server_close()
+            target_thread.join(timeout=5)
+
+
 class ControlsCheck(unittest.TestCase):
     def good_obs(self):
         req_row, resp_row = probe.control_rows()
