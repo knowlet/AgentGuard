@@ -39,8 +39,9 @@ def binomial_cdf(k: int, n: int, p: float) -> float:
         return 0.0
     if k == n:
         return 1.0
-    # Sum the smaller number of terms; bound roundoff at the probability limits.
-    if k > n // 2 and 0.0 < 1.0 - p < 1.0:
+    # Use the shorter complementary sum only above the mean. Below the mean,
+    # subtracting a near-one upper tail can erase a tiny but representable CDF.
+    if k > n // 2 and k >= n * p and 0.0 < 1.0 - p < 1.0:
         return max(0.0, min(1.0, 1.0 - binomial_cdf(n - k - 1, n, 1.0 - p)))
     log_p, log_q = math.log(p), math.log1p(-p)
     log_factorial = math.lgamma(n + 1)

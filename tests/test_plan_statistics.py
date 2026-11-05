@@ -1,5 +1,6 @@
 import json
 import math
+from decimal import Decimal, localcontext
 import subprocess
 import sys
 import unittest
@@ -12,6 +13,30 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class StatisticalPlanning(unittest.TestCase):
+    def test_small_lower_tails_do_not_lose_precision_to_complement(self):
+        for n, k, p in ((100, 60, .99), (100, 90, .999),
+                        (30, 20, .99), (100, 70, .9),
+                        (100, 59, .6), (100, 60, .6), (100, 61, .6)):
+            with self.subTest(n=n, k=k, p=p), localcontext() as context:
+                context.prec = 100
+                probability = Decimal.from_float(p)
+                expected = float(sum(
+                    Decimal(math.comb(n, j)) * probability**j
+                    * (1 - probability)**(n - j)
+                    for j in range(k + 1)
+                ))
+                actual = binomial_cdf(k, n, p)
+                self.assertGreater(actual, 0)
+                self.assertTrue(math.isclose(actual, expected, rel_tol=1e-11,
+                                             abs_tol=0), (actual, expected))
+
+    def test_plan_does_not_accept_roundoff_as_passing_probability(self):
+        result = plan(metric="fpr", threshold=.8, expected_rate=.99,
+                      target_power=1e-15, min_groups=100, max_groups=100)
+        self.assertEqual(result["status"], "NOT_FOUND")
+        self.assertIsNone(result["planned_n"])
+        self.assertLess(result["candidate_rows"][0]["passing_probability"], 1e-15)
+
     def test_binomial_sum_against_small_exact_enumeration(self):
         for n in (1, 3, 10, 30):
             for k in range(-1, n + 1):
