@@ -29,8 +29,60 @@ def _probability(value: float, name: str, *, inclusive: bool = False) -> None:
         raise ValueError(f"{name} is outside its probability range")
 
 
+_BETA_ITERATIONS = 4096
+_BETA_TOLERANCE = 1e-14
+_BETA_DENOMINATOR_FLOOR = 1e-300
+
+
+def _beta_continued_fraction(a: float, b: float, x: float) -> float:
+    """Incomplete-beta fraction by modified Lentz, not one step per term."""
+    qab = a + b
+    qap = a + 1.0
+    qam = a - 1.0
+    c = 1.0
+    # First denominator 1 + d1, with d1 = -(a+b)x/(a+1).
+    d = 1.0 - qab * x / qap
+    if abs(d) < _BETA_DENOMINATOR_FLOOR:
+        d = _BETA_DENOMINATOR_FLOOR
+    d = 1.0 / d
+    h = d
+    for m in range(1, _BETA_ITERATIONS + 1):
+        twice = 2 * m
+        numerators = (
+            m * (b - m) * x / ((qam + twice) * (a + twice)),
+            -(a + m) * (qab + m) * x / ((a + twice) * (qap + twice)),
+        )
+        for numerator in numerators:
+            d = 1.0 + numerator * d
+            if abs(d) < _BETA_DENOMINATOR_FLOOR:
+                d = _BETA_DENOMINATOR_FLOOR
+            c = 1.0 + numerator / c
+            if abs(c) < _BETA_DENOMINATOR_FLOOR:
+                c = _BETA_DENOMINATOR_FLOOR
+            d = 1.0 / d
+            delta = c * d
+            h *= delta
+        if abs(delta - 1.0) < _BETA_TOLERANCE:
+            return h
+    raise ArithmeticError("binomial CDF continued fraction did not converge")
+
+
+def _regularized_incomplete_beta(a: float, b: float, x: float, log_x: float,
+                                 log_one_minus_x: float) -> float:
+    """I_x(a, b) = x^a (1-x)^b / (a B(a, b)) times its continued fraction."""
+    fraction = _beta_continued_fraction(a, b, x)
+    log_beta = math.fsum((math.lgamma(a), math.lgamma(b), -math.lgamma(a + b)))
+    prefactor = math.exp(math.fsum((a * log_x, b * log_one_minus_x, -log_beta)))
+    return prefactor * fraction / a
+
+
 def binomial_cdf(k: int, n: int, p: float) -> float:
-    """Finite binomial sum using log probabilities; no scipy runtime dependency."""
+    """Closed-form binomial CDF. No scipy runtime dependency.
+
+    P(X <= k) = I_{1-p}(n-k, k+1). The fraction is taken on the side below
+    its mean, so a tiny lower tail is computed directly instead of as
+    1 minus a near-one upper tail.
+    """
     _integer(n, "n", 1)
     if type(k) is not int or not -1 <= k <= n:
         raise ValueError("k must be an integer in -1..n")
@@ -39,17 +91,12 @@ def binomial_cdf(k: int, n: int, p: float) -> float:
         return 0.0
     if k == n:
         return 1.0
-    # Use the shorter complementary sum only above the mean. Below the mean,
-    # subtracting a near-one upper tail can erase a tiny but representable CDF.
-    if k > n // 2 and k >= n * p and 0.0 < 1.0 - p < 1.0:
-        return max(0.0, min(1.0, 1.0 - binomial_cdf(n - k - 1, n, 1.0 - p)))
     log_p, log_q = math.log(p), math.log1p(-p)
-    log_factorial = math.lgamma(n + 1)
-    total = math.fsum(math.exp(log_factorial - math.lgamma(j + 1)
-                             - math.lgamma(n - j + 1)
-                             + j * log_p + (n - j) * log_q)
-                      for j in range(k + 1))
-    return min(1.0, max(0.0, total))
+    if (1.0 - p) < (n - k + 1) / (n + 2.0):
+        probability = _regularized_incomplete_beta(n - k, k + 1, 1.0 - p, log_q, log_p)
+    else:
+        probability = 1.0 - _regularized_incomplete_beta(k + 1, n - k, p, log_p, log_q)
+    return min(1.0, max(0.0, probability))
 
 
 def acceptable_errors(n: int, *, metric: str, threshold: float,
