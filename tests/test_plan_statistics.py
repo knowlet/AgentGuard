@@ -22,6 +22,20 @@ def _direct_binomial_sum(k: int, n: int, p: float) -> float:
     return min(1.0, max(0.0, total))
 
 
+def _decimal_binomial_cdf(k: int, n: int, p: float) -> float:
+    """Exact-enough reference: every term in 60-digit decimal arithmetic."""
+    with localcontext() as context:
+        context.prec = 60
+        probability = Decimal.from_float(p)
+        complement = 1 - probability
+        term = complement ** n
+        total = term
+        for j in range(k):
+            term = term * (n - j) / (j + 1) * probability / complement
+            total += term
+        return float(total)
+
+
 class StatisticalPlanning(unittest.TestCase):
     def test_small_lower_tails_do_not_lose_precision_to_complement(self):
         for n, k, p in ((100, 60, .99), (100, 90, .999),
@@ -39,6 +53,35 @@ class StatisticalPlanning(unittest.TestCase):
                 self.assertGreater(actual, 0)
                 self.assertTrue(math.isclose(actual, expected, rel_tol=1e-11,
                                              abs_tol=0), (actual, expected))
+
+    def test_unbalanced_huge_parameters_keep_the_beta_normalization(self):
+        # P(X = 0) = (1 - p)^n; with n p = 1 that is e^-1, not ~1.
+        self.assertTrue(math.isclose(binomial_cdf(0, 10**16, 1e-16), math.exp(-1),
+                                     rel_tol=1e-9))
+        for k in (1, 2, 5):
+            with self.subTest(k=k):
+                # Poisson(1) limit of Binomial(10**16, 1e-16), exact to ~1e-15.
+                expected = math.exp(-1) * math.fsum(1 / math.factorial(j)
+                                                    for j in range(k + 1))
+                self.assertTrue(math.isclose(binomial_cdf(k, 10**16, 1e-16), expected,
+                                             rel_tol=1e-6), k)
+
+    def test_huge_near_mean_input_converges_to_the_symmetric_identity(self):
+        n = 100_000_000_000
+        # P(X <= n/2) = 1/2 + P(X = n/2)/2 for p = 1/2; Stirling with its 1/(4n)
+        # correction gives P(X = n/2) to far better than the tolerance here.
+        center = math.sqrt(2 / (math.pi * n)) * (1 - 1 / (4 * n))
+        actual = binomial_cdf(n // 2, n, 0.5)
+        self.assertTrue(math.isclose(actual, 0.5 + 0.5 * center, rel_tol=0.0,
+                                     abs_tol=1e-10), actual)
+
+    def test_large_near_mean_inputs_match_decimal_reference(self):
+        for k, n, p in ((5_000, 10_000, 0.5), (49_900, 100_000, 0.5),
+                        (29_950, 100_000, 0.3), (70_100, 100_000, 0.7)):
+            with self.subTest(k=k, n=n, p=p):
+                expected = _decimal_binomial_cdf(k, n, p)
+                self.assertTrue(math.isclose(binomial_cdf(k, n, p), expected,
+                                             rel_tol=1e-11), expected)
 
     def test_plan_does_not_accept_roundoff_as_passing_probability(self):
         result = plan(metric="fpr", threshold=.8, expected_rate=.99,
@@ -74,7 +117,8 @@ class StatisticalPlanning(unittest.TestCase):
             self.assertLess(k, n * p)
             cases.append((k, n, p))
         actual = binomial_cdf(*cases[0])
-        reference = _direct_binomial_sum(*cases[0])
+        # The lgamma-based direct sum is itself off by ~1e-12 at this size.
+        reference = _decimal_binomial_cdf(*cases[0])
         self.assertTrue(math.isclose(actual, reference, rel_tol=1e-12, abs_tol=0.0),
                         (actual, reference))
         calls = 0

@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+from fractions import Fraction
 from typing import Any
 
 from tools.assurance_contract import rate_gate
@@ -34,6 +35,11 @@ _BETA_TOLERANCE = 1e-14
 _BETA_DENOMINATOR_FLOOR = 1e-300
 
 
+def _beta_iteration_limit(a: float, b: float) -> int:
+    """Near the mean the fraction needs on the order of sqrt(a + b) steps."""
+    return max(_BETA_ITERATIONS, math.ceil(16 * math.sqrt(a + b)))
+
+
 def _beta_continued_fraction(a: float, b: float, x: float) -> float:
     """Incomplete-beta fraction by modified Lentz, not one step per term."""
     qab = a + b
@@ -46,7 +52,7 @@ def _beta_continued_fraction(a: float, b: float, x: float) -> float:
         d = _BETA_DENOMINATOR_FLOOR
     d = 1.0 / d
     h = d
-    for m in range(1, _BETA_ITERATIONS + 1):
+    for m in range(1, _beta_iteration_limit(a, b) + 1):
         twice = 2 * m
         numerators = (
             m * (b - m) * x / ((qam + twice) * (a + twice)),
@@ -67,21 +73,84 @@ def _beta_continued_fraction(a: float, b: float, x: float) -> float:
     raise ArithmeticError("binomial CDF continued fraction did not converge")
 
 
+_HALF_LOG_TWO_PI = 0.5 * math.log(2.0 * math.pi)
+
+
+def _stirling_remainder(x: float) -> float:
+    """lgamma(x) - ((x - 1/2) log x - x + log(2 pi)/2), for x >= 10."""
+    inverse = 1.0 / x
+    inverse_squared = inverse * inverse
+    return inverse * (1.0 / 12 - inverse_squared * (
+        1.0 / 360 - inverse_squared * (1.0 / 1260 - inverse_squared / 1680)))
+
+
+def _log_beta(a: float, b: float) -> float:
+    """log B(a, b) without subtracting two huge lgamma values.
+
+    lgamma(a) - lgamma(a + b) loses every significant digit when a is huge and
+    b is small (lgamma(1e16) is about 3.6e17, so its rounding error alone is
+    tens of units). Write that difference through Stirling's series instead.
+    """
+    small, large = min(a, b), max(a, b)
+    if large < 10:
+        return math.fsum((math.lgamma(a), math.lgamma(b), -math.lgamma(a + b)))
+    total = large + small
+    large_minus_total = math.fsum((
+        -small * math.log(total),
+        -(large - 0.5) * math.log1p(small / large),
+        small,
+        _stirling_remainder(large),
+        -_stirling_remainder(total),
+    ))
+    return math.lgamma(small) + large_minus_total
+
+
+def _log_beta_prefactor(a: float, b: float, log_x: float, log_one_minus_x: float,
+                        excess: float) -> float:
+    """log(x^a (1-x)^b / B(a, b)), with excess = x (a + b) - a.
+
+    For large a and b, a log x, b log(1-x) and log B(a, b) are each of order
+    a + b, so adding them leaves an absolute error of order (a + b) * 2**-52
+    in the exponent. Expanding around the mean x0 = a / (a + b) instead keeps
+    every term small: a log(x/x0) + b log((1-x)/(1-x0)) plus Stirling's
+    closed form for x0^a (1-x0)^b / B(a, b).
+    """
+    if min(a, b) < 10:
+        return math.fsum((a * log_x, b * log_one_minus_x, -_log_beta(a, b)))
+    total = a + b
+    if abs(excess) <= 0.5 * min(a, b):
+        # Near the mean x/x0 = 1 + excess/a and (1-x)/(1-x0) = 1 - excess/b.
+        log_ratios = (a * math.log1p(excess / a), b * math.log1p(-excess / b))
+    else:
+        # Far tail: the ratios are not near 1 and the exponent is large anyway.
+        log_total = math.log(total)
+        log_ratios = (a * (log_x - math.log(a) + log_total),
+                      b * (log_one_minus_x - math.log(b) + log_total))
+    return math.fsum((
+        *log_ratios,
+        0.5 * (math.log(a) + math.log(b) - math.log(total)),
+        -_HALF_LOG_TWO_PI,
+        -_stirling_remainder(a),
+        -_stirling_remainder(b),
+        _stirling_remainder(total),
+    ))
+
+
 def _regularized_incomplete_beta(a: float, b: float, x: float, log_x: float,
-                                 log_one_minus_x: float) -> float:
+                                 log_one_minus_x: float, excess: float) -> float:
     """I_x(a, b) = x^a (1-x)^b / (a B(a, b)) times its continued fraction."""
     fraction = _beta_continued_fraction(a, b, x)
-    log_beta = math.fsum((math.lgamma(a), math.lgamma(b), -math.lgamma(a + b)))
-    prefactor = math.exp(math.fsum((a * log_x, b * log_one_minus_x, -log_beta)))
+    prefactor = math.exp(_log_beta_prefactor(a, b, log_x, log_one_minus_x, excess))
     return prefactor * fraction / a
 
 
 def binomial_cdf(k: int, n: int, p: float) -> float:
     """Closed-form binomial CDF. No scipy runtime dependency.
 
-    P(X <= k) = I_{1-p}(n-k, k+1). The fraction is taken on the side below
-    its mean, so a tiny lower tail is computed directly instead of as
-    1 minus a near-one upper tail.
+    P(X <= k) = I_{1-p}(n-k, k+1). The fraction is evaluated directly when
+    1-p < (n-k+1)/(n+2), the point where its continued fraction converges
+    fastest, and otherwise as 1 - I_p(k+1, n-k); a tiny lower tail is
+    therefore computed directly instead of as 1 minus a near-one upper tail.
     """
     _integer(n, "n", 1)
     if type(k) is not int or not -1 <= k <= n:
@@ -92,10 +161,18 @@ def binomial_cdf(k: int, n: int, p: float) -> float:
     if k == n:
         return 1.0
     log_p, log_q = math.log(p), math.log1p(-p)
+    if k == 0:
+        # P(X = 0) = (1 - p)^n exactly; 1 - p itself would round for tiny p.
+        return math.exp(n * log_q)
     if (1.0 - p) < (n - k + 1) / (n + 2.0):
-        probability = _regularized_incomplete_beta(n - k, k + 1, 1.0 - p, log_q, log_p)
+        # excess = (1-p)(n+1) - (n-k) = (k+1) - p(n+1), exact then rounded once.
+        excess = float((k + 1) - Fraction(p) * (n + 1))
+        probability = _regularized_incomplete_beta(n - k, k + 1, 1.0 - p, log_q, log_p,
+                                                   excess)
     else:
-        probability = 1.0 - _regularized_incomplete_beta(k + 1, n - k, p, log_p, log_q)
+        excess = float(Fraction(p) * (n + 1) - (k + 1))
+        probability = 1.0 - _regularized_incomplete_beta(k + 1, n - k, p, log_p, log_q,
+                                                         excess)
     return min(1.0, max(0.0, probability))
 
 
